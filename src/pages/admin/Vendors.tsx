@@ -57,6 +57,17 @@ const formatDate = (value?: string) => {
 
 const money = (v?: number) => `Rs.${(v ?? 0).toLocaleString()}`;
 
+const vendorNumber = (id: string) => {
+  const digits = id.replace(/\D/g, "");
+  if (digits.length >= 5) return digits.slice(-5);
+
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  }
+  return String(hash % 100000).padStart(5, "0");
+};
+
 const Vendors = () => {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -122,9 +133,11 @@ const Vendors = () => {
   const filtered = useMemo(() => {
     const term = search.toLowerCase();
     return vendors.filter((v) => {
+      const shortNo = vendorNumber(v.id);
       return (
         v.name.toLowerCase().includes(term) ||
         v.id.toLowerCase().includes(term) ||
+        shortNo.includes(term) ||
         v.category.toLowerCase().includes(term) ||
         v.city.toLowerCase().includes(term)
       );
@@ -342,7 +355,9 @@ const Vendors = () => {
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-violet-500">{vendor.id}</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-violet-500" title={vendor.id}>
+                    Vendor No: {vendorNumber(vendor.id)}
+                  </p>
                   <h3 className="mt-1 text-lg font-semibold text-slate-900">{vendor.name}</h3>
                   <p className="text-sm text-slate-500">{vendor.category}</p>
                 </div>
@@ -444,7 +459,9 @@ const Vendors = () => {
             <div className="flex items-center justify-between border-b border-violet-100 bg-[linear-gradient(180deg,#ffffff_0%,#f8f7ff_100%)] px-5 py-4">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">{selectedVendor.name}</h3>
-                <p className="text-xs text-slate-500">Vendor ID: {selectedVendor.id}</p>
+                <p className="text-xs text-slate-500" title={selectedVendor.id}>
+                  Vendor No: {vendorNumber(selectedVendor.id)}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <button

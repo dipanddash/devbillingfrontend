@@ -1,6 +1,7 @@
 ﻿import { Outlet, Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { handleEnterPrimaryAction } from "@/lib/enterAction";
+import { createAuthFetch } from "@/lib/authFetch";
 import { LogOut, ChevronDown, User, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
   
@@ -11,11 +12,9 @@ interface NavItem {
 
 const staffNav: NavItem[] = [
   { label: 'Dashboard', path: '/staff' },
-  { label: 'POS', path: '/staff/pos' },
   { label: 'Tables', path: '/staff/tables' },
   { label: 'Kitchen', path: '/staff/kitchen' },
   { label: 'Orders', path: '/staff/orders' },
-  { label: 'Purchase', path: '/staff/purchase-entry' },
   { label: 'Attendance', path: '/staff/attendance' },
   { label: 'Closing', path: '/staff/manual-closing' },
   { label: 'Reports', path: '/staff/reports' },
@@ -47,6 +46,16 @@ const StaffLayout = () => {
     const shouldTrackRequest = (url: string) =>
       url.includes("/api/") && !window.location.pathname.startsWith("/staff/kitchen");
 
+    const handleUnauthorized = () => {
+      logout();
+      navigate("/");
+    };
+
+    const authFetch = createAuthFetch(originalFetch, {
+      apiBase: import.meta.env.VITE_API_BASE,
+      onLogout: handleUnauthorized,
+    });
+
     window.fetch = async (...args: Parameters<typeof fetch>) => {
       const requestUrl = getRequestUrl(args[0]);
       const trackThisRequest = shouldTrackRequest(requestUrl);
@@ -64,7 +73,7 @@ const StaffLayout = () => {
       }
 
       try {
-        return await originalFetch(...args);
+        return await authFetch(...args);
       } finally {
         if (trackThisRequest) {
           activeRequestsRef.current = Math.max(0, activeRequestsRef.current - 1);
@@ -88,7 +97,7 @@ const StaffLayout = () => {
       activeRequestsRef.current = 0;
       setShowApiLoader(false);
     };
-  }, []);
+  }, [logout, navigate]);
 
   useEffect(() => {
     if (!isKitchenRoute) return;
@@ -101,11 +110,15 @@ const StaffLayout = () => {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && newOrderOpen) {
+        setNewOrderOpen(false);
+        return;
+      }
       handleEnterPrimaryAction(event);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [newOrderOpen]);
 
   const handleLogout = async () => {
   const token = localStorage.getItem("access");
@@ -286,6 +299,7 @@ const StaffLayout = () => {
 };
 
 export default StaffLayout;
+
 
 
 

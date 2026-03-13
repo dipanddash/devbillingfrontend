@@ -26,9 +26,12 @@ export interface OfflineOrderPayload {
   customer_phone?: string;
   items: OfflineOrderItem[];
   discount_amount?: number;
-  payment_method: string;
+  payment_method?: string;
   payment_reference?: string;
   cash_received?: number;
+  status?: string;
+  payment_status?: string;
+  server_order_id?: string;
 }
 
 /**
@@ -42,6 +45,23 @@ export async function createOfflineOrder(payload: OfflineOrderPayload): Promise<
 }> {
   await getDb();
   const orderId = generateUUID();
+  return saveOfflineOrder(payload, orderId);
+}
+
+export async function saveOfflineOrder(
+  payload: OfflineOrderPayload,
+  existingId?: string,
+): Promise<{
+  id: string;
+  order_id: string;
+  total_amount: number;
+}> {
+  await getDb();
+  const orderId = existingId || generateUUID();
+  const orderStatus = String(payload.status || "COMPLETED").toUpperCase();
+  const paymentStatus = String(payload.payment_status || "PAID").toUpperCase();
+  const paymentMethod =
+    paymentStatus === "PAID" ? String(payload.payment_method || "CASH").toUpperCase() : "";
 
   // Calculate total
   let total = 0;
@@ -68,38 +88,86 @@ export async function createOfflineOrder(payload: OfflineOrderPayload): Promise<
     })),
   }));
 
-  const syncPayload = {
+  const syncPayload: Record<string, unknown> = {
     order_type: payload.order_type,
     customer_name: payload.customer_name,
     customer_phone: payload.customer_phone || "",
     items: syncItems,
     discount_amount: discount,
-    payment: {
-      method: payload.payment_method,
-      reference: payload.payment_reference || "",
-    },
+    status: orderStatus,
+    payment_status: paymentStatus,
   };
+  if (payload.server_order_id) {
+    syncPayload.server_order_id = payload.server_order_id;
+  }
+  if (paymentStatus === "PAID" && paymentMethod) {
+    syncPayload.payment = {
+      method: paymentMethod,
+      reference: payload.payment_reference || "",
+    };
+  }
 
-  // Store in local orders table
+  // Store or update the local order row.
   runQuery(
-    `INSERT INTO offline_orders (id, order_type, customer_name, customer_phone, payment_method, payment_reference, cash_received, total_amount, discount_amount, items_json, sync_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+    `INSERT INTO offline_orders (
+       id, order_type, customer_name, customer_phone, status, payment_status,
+       payment_method, payment_reference, cash_received, total_amount,
+       discount_amount, items_json, sync_status, server_id
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+     ON CONFLICT(id) DO UPDATE SET
+       order_type = excluded.order_type,
+       customer_name = excluded.customer_name,
+       customer_phone = excluded.customer_phone,
+       status = excluded.status,
+       payment_status = excluded.payment_status,
+       payment_method = excluded.payment_method,
+       payment_reference = excluded.payment_reference,
+       cash_received = excluded.cash_received,
+       total_amount = excluded.total_amount,
+       discount_amount = excluded.discount_amount,
+       items_json = excluded.items_json,
+       server_id = excluded.server_id,
+       sync_status = 'pending',
+       sync_error = NULL`,
     [
       orderId,
       payload.order_type,
       payload.customer_name,
       payload.customer_phone || "",
-      payload.payment_method,
+      orderStatus,
+      paymentStatus,
+      paymentMethod,
       payload.payment_reference || "",
       payload.cash_received || 0,
       finalTotal,
       discount,
       JSON.stringify(payload.items),
+      payload.server_order_id || null,
     ],
   );
 
-  // Add to sync queue
-  await addToSyncQueue("order", "create", syncPayload, orderId);
+  // Keep a single pending queue row per offline order so edits update the same payload.
+  const existingQueueRow = queryOne<{ id: number }>(
+    `SELECT id
+     FROM sync_queue
+     WHERE entity_type = 'order'
+       AND entity_id = ?
+       AND status IN ('pending', 'retry', 'syncing')
+     ORDER BY id DESC
+     LIMIT 1`,
+    [orderId],
+  );
+  if (existingQueueRow?.id) {
+    runQuery(
+      `UPDATE sync_queue
+       SET payload = ?, status = 'pending', error_message = NULL
+       WHERE id = ?`,
+      [JSON.stringify(syncPayload), existingQueueRow.id],
+    );
+  } else {
+    await addToSyncQueue("order", "create", syncPayload, orderId);
+  }
 
   await persistDb();
 
@@ -126,6 +194,19 @@ export async function getOfflineOrders(): Promise<any[]> {
     ...r,
     items: r.items_json ? JSON.parse(r.items_json) : [],
   }));
+}
+
+export async function getOfflineOrderById(id: string): Promise<any | null> {
+  await getDb();
+  const row = queryOne(
+    "SELECT * FROM offline_orders WHERE id = ? LIMIT 1",
+    [id],
+  ) as Record<string, unknown> | null;
+  if (!row) return null;
+  return {
+    ...row,
+    items: row.items_json ? JSON.parse(String(row.items_json)) : [],
+  };
 }
 
 /** Update offline order after successful sync. */

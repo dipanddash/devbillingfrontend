@@ -2,7 +2,7 @@
  * Data caching layer — saves server data to local SQLite for offline access.
  * Handles products, categories, addons, combos, customers, and tables.
  */
-import { getDb, persistDb, queryAll, runQuery } from "./db";
+import { getDb, persistDb, queryAll, queryOne, runQuery } from "./db";
 
 // ── Cache writers (called after fetching from server) ──────
 
@@ -91,6 +91,61 @@ export async function cacheTables(tables: any[]): Promise<void> {
     );
   }
   await persistDb();
+}
+
+export async function cacheOrders(orders: any[]): Promise<void> {
+  await getDb();
+  runQuery("DELETE FROM orders_cache");
+  for (const order of orders) {
+    runQuery(
+      `INSERT OR REPLACE INTO orders_cache (
+        id, order_ref, table_name, customer_name, items_count, total_amount,
+        order_status, payment_status, bill_number, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        order.id,
+        order.order_id ?? order.bill_number ?? order.id ?? "",
+        order.table_name ?? "Takeaway",
+        order.customer_name ?? "Walk-in",
+        Number(order.items_count ?? 0),
+        Number(order.total_amount ?? 0),
+        order.status ?? "",
+        order.payment_status ?? "",
+        order.bill_number ?? "",
+        order.created_at ?? new Date().toISOString(),
+      ],
+    );
+  }
+  await persistDb();
+}
+
+export async function getCachedOrders(): Promise<any[]> {
+  await getDb();
+  return queryAll("SELECT * FROM orders_cache ORDER BY created_at DESC");
+}
+
+export async function cacheOrderDetail(order: any): Promise<void> {
+  await getDb();
+  runQuery(
+    `INSERT OR REPLACE INTO order_details_cache (id, payload_json, cached_at)
+     VALUES (?, ?, datetime('now'))`,
+    [order.id, JSON.stringify(order)],
+  );
+  await persistDb();
+}
+
+export async function getCachedOrderDetail(orderId: string): Promise<any | null> {
+  await getDb();
+  const row = queryOne<{ payload_json: string }>(
+    "SELECT payload_json FROM order_details_cache WHERE id = ? LIMIT 1",
+    [orderId],
+  );
+  if (!row?.payload_json) return null;
+  try {
+    return JSON.parse(row.payload_json);
+  } catch {
+    return null;
+  }
 }
 
 /**

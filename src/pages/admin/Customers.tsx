@@ -6,6 +6,7 @@ import {
   Wallet,
   Trophy,
   X,
+  Download,
 } from "lucide-react";
 
 import {
@@ -23,6 +24,7 @@ import {
 /* ================= CONFIG ================= */
 
 const API_BASE = import.meta.env.VITE_API_BASE;
+const PAGE_SIZE = 20;
 
 /* ================= TYPES ================= */
 
@@ -59,6 +61,7 @@ const Customers = () => {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Customer | null>(null);
+  const [page, setPage] = useState(1);
 
   /* ================= AUTH ================= */
 
@@ -111,6 +114,79 @@ const Customers = () => {
         c.id?.includes(t)
     );
   }, [customers, search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, customers]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+
+  const pagedCustomers = useMemo(() => {
+    const currentPage = Math.min(page, totalPages);
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, page, totalPages]);
+
+  const exportCustomers = () => {
+    const rows = filtered.map((c) => ({
+      customer_name: c.name || "Unknown",
+      phone: c.phone || "-",
+      joined: formatDate(c.created_at),
+      orders: c.order_count ?? 0,
+      visits: c.visit_count ?? 0,
+      total_spent: c.total_spent ?? 0,
+      avg_order_value: c.avg_order_value ?? 0,
+      last_visit: formatDate(c.last_visit_at),
+      favorite_order_type: c.favorite_order_type || "-",
+    }));
+
+    const headers = [
+      "Customer Name",
+      "Phone",
+      "Joined",
+      "Orders",
+      "Visits",
+      "Total Spent",
+      "Avg Order Value",
+      "Last Visit",
+      "Favorite Order Type",
+    ];
+
+    const escapeCsv = (value: string | number) => {
+      const text = String(value ?? "");
+      if (/[",\n]/.test(text)) return `"${text.replace(/"/g, "\"\"")}"`;
+      return text;
+    };
+
+    const lines = [
+      headers.join(","),
+      ...rows.map((r) =>
+        [
+          r.customer_name,
+          r.phone,
+          r.joined,
+          r.orders,
+          r.visits,
+          r.total_spent,
+          r.avg_order_value,
+          r.last_visit,
+          r.favorite_order_type,
+        ]
+          .map(escapeCsv)
+          .join(",")
+      ),
+    ];
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `customers_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   /* ================= ANALYTICS ================= */
 
@@ -334,21 +410,29 @@ const Customers = () => {
             Customers List
           </h2>
 
-          <div className="relative w-64">
-            <Search
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-violet-400"
-            />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={exportCustomers}
+              className="inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 transition hover:bg-violet-100"
+            >
+              <Download size={14} />
+              Export
+            </button>
+            <div className="relative w-64">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-violet-400"
+              />
 
-            <input
-              value={search}
-              onChange={(e) =>
-                setSearch(e.target.value)
-              }
-              placeholder="Search customer..."
-              className="w-full rounded-xl border border-violet-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-800 outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-300/40"
-            />
-
+              <input
+                value={search}
+                onChange={(e) =>
+                  setSearch(e.target.value)
+                }
+                placeholder="Search customer..."
+                className="w-full rounded-xl border border-violet-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-800 outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-300/40"
+              />
+            </div>
           </div>
 
         </div>
@@ -383,7 +467,7 @@ const Customers = () => {
 
           <tbody className="divide-y divide-violet-50">
 
-            {filtered.map((c) => (
+            {pagedCustomers.map((c) => (
 
               <tr
                 key={c.id}
@@ -422,6 +506,34 @@ const Customers = () => {
           </tbody>
 
         </table>
+
+        <div className="flex items-center justify-between border-t border-violet-100 bg-white px-4 py-3 text-xs text-slate-600">
+          <p>
+            Showing {(filtered.length ? (Math.min(page, totalPages) - 1) * PAGE_SIZE + 1 : 0)}-
+            {Math.min(Math.min(page, totalPages) * PAGE_SIZE, filtered.length)} of {filtered.length}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="rounded-md border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="font-medium text-slate-700">
+              Page {Math.min(page, totalPages)} / {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="rounded-md border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
+        </div>
 
       </div>
 

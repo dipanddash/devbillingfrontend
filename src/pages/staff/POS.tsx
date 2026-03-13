@@ -9,9 +9,10 @@ import { Input } from "@/components/ui/input";
 import { isOnline } from "@/offline/network";
 import {
   cacheCategories, cacheProducts, cacheAddons, cacheCombos,
-  getCachedCategories, getCachedProducts, getCachedAddons, getCachedCombos,
+  cacheOrderDetail,
+  getCachedCategories, getCachedProducts, getCachedAddons, getCachedCombos, getCachedOrderDetail,
 } from "@/offline/cache";
-import { createOfflineOrder } from "@/offline/orders";
+import { createOfflineOrder, getOfflineOrderById, saveOfflineOrder } from "@/offline/orders";
 
 const BASE_URL = import.meta.env.VITE_API_BASE;
 const HOLD_CART_KEY = "staff_pos_hold_cart_v1";
@@ -91,6 +92,41 @@ interface OrderDetails {
   table_number?: string;
   token_number?: string;
   session?: string;
+  items?: OrderDetailItem[];
+}
+
+interface OrderDetailItemAddon {
+  addon?: string;
+  addon_name?: string;
+  price_at_time: number | string;
+}
+
+interface OrderDetailItem {
+  id: string;
+  product?: string;
+  combo?: string;
+  product_name?: string;
+  combo_name?: string;
+  quantity: number;
+  base_price: number | string;
+  gst_percent: number | string;
+  price_at_time: number | string;
+  addons?: OrderDetailItemAddon[];
+}
+
+interface OfflineStoredOrderItem {
+  product?: string;
+  combo?: string;
+  name: string;
+  quantity: number;
+  price: number;
+  gst_percent: number;
+  addons?: Array<{
+    id: string;
+    name: string;
+    price: number;
+    qty: number;
+  }>;
 }
 
 interface PendingSelection {
@@ -123,6 +159,8 @@ interface InvoiceCouponDetails {
   discount_type?: "AMOUNT" | "PERCENT" | string;
   value?: number | string;
   discount_amount?: number | string;
+  free_item?: string;
+  free_item_category?: string;
 }
 
 interface InvoiceData {
@@ -150,10 +188,12 @@ interface InvoiceData {
 interface AppliedCoupon {
   id: number;
   code: string;
-  discount_type: "AMOUNT" | "PERCENT";
+  discount_type: "AMOUNT" | "PERCENT" | "FREE_ITEM";
   value: number;
   min_order_amount: number;
   max_discount_amount: number | null;
+  free_item?: string;
+  free_item_category?: string;
 }
 
 /* ================= COMPONENT ================= */
@@ -283,6 +323,100 @@ export default function SalesTransactionPage() {
         ? (nestedOrder as Record<string, unknown>)["id"]
         : undefined;
     return String(obj["id"] ?? obj["order_id"] ?? nestedOrderId ?? "");
+  };
+
+  const mapExistingOrderItemsToCart = (items: OrderDetailItem[]): CartItem[] => {
+    const mappedByKey: Record<string, CartItem> = {};
+
+    items.forEach((item) => {
+      const quantity = Math.max(1, Number(item.quantity || 1));
+      const gstPercent = Number(item.gst_percent || 0);
+
+      if (item.combo) {
+        const comboId = String(item.combo);
+        const key = `combo:${comboId}`;
+        const unitPrice = Number(item.price_at_time || item.base_price || 0);
+        const existing = mappedByKey[key];
+        if (existing) {
+          existing.qty += quantity;
+        } else {
+          mappedByKey[key] = {
+            key,
+            type: "combo",
+            id: comboId,
+            name: item.combo_name || "Combo",
+            price: unitPrice,
+            qty: quantity,
+            gst_percent: gstPercent,
+          };
+        }
+        return;
+      }
+
+      if (!item.product) return;
+
+      const addonRows = Array.isArray(item.addons) ? item.addons : [];
+      const addonMap: Record<string, SelectedAddon> = {};
+      addonRows.forEach((addonRow) => {
+        if (!addonRow?.addon) return;
+        const addonId = String(addonRow.addon);
+        const existing = addonMap[addonId];
+        if (existing) {
+          existing.qty += 1;
+        } else {
+          addonMap[addonId] = {
+            id: addonId,
+            name: addonRow.addon_name || "Addon",
+            price: Number(addonRow.price_at_time || 0),
+            qty: 1,
+          };
+        }
+      });
+
+      const selectedAddons = Object.values(addonMap).sort((a, b) => a.name.localeCompare(b.name));
+      const addonKey = selectedAddons.map((addon) => `${addon.id}:${addon.qty}`).join(",");
+      const productId = String(item.product);
+      const basePrice = Number(item.base_price || 0);
+      const unitAddonPrice = selectedAddons.reduce((sum, addon) => sum + addon.price * addon.qty, 0);
+      const unitPrice = basePrice + unitAddonPrice;
+      const key = `product:${productId}:${addonKey}`;
+      const existing = mappedByKey[key];
+      if (existing) {
+        existing.qty += quantity;
+      } else {
+        mappedByKey[key] = {
+          key,
+          type: "product",
+          id: productId,
+          name: item.product_name || "Product",
+          price: unitPrice,
+          basePrice,
+          qty: quantity,
+          gst_percent: gstPercent,
+          selectedAddons,
+        };
+      }
+    });
+
+    return Object.values(mappedByKey);
+  };
+
+  const mapOfflineOrderItemsToCart = (items: OfflineStoredOrderItem[]): CartItem[] => {
+    return items.map((item, index) => ({
+      key: `${item.product ?? item.combo ?? item.name}-${index}`,
+      type: item.combo ? "combo" : "product",
+      id: String(item.product ?? item.combo ?? ""),
+      name: item.name,
+      price: Number(item.price || 0),
+      qty: Math.max(1, Number(item.quantity || 1)),
+      gst_percent: Number(item.gst_percent || 0),
+      selectedAddons: (item.addons ?? []).map((addon) => ({
+        id: addon.id,
+        name: addon.name,
+        price: Number(addon.price || 0),
+        qty: Math.max(1, Number(addon.qty || 1)),
+      })),
+    }));
   };
 
   const startTakeawayFromPos = async () => {
@@ -550,26 +684,72 @@ export default function SalesTransactionPage() {
   useEffect(() => {
     if (!effectiveOrderId || !token) return;
 
-    // Skip server fetch for offline-created orders
-    if (isOfflineOrder) {
-      setOrderDetails({
-        id: effectiveOrderId,
-        order_type: "TAKEAWAY",
-        customer_name: offlineCustomerName,
-        customer_phone: offlineCustomerPhone,
-      } as OrderDetails);
-      return;
-    }
+    let isCancelled = false;
 
-    fetch(`${BASE_URL}/api/orders/${effectiveOrderId}/`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(r => r.json())
-      .then(data => {
-        console.log("ORDER DETAILS:", data);
-        setOrderDetails(data);
-      })
-      .catch(err => console.error(err));
+    const loadOrder = async () => {
+      const offlineOrder = await getOfflineOrderById(effectiveOrderId);
+      if (!isCancelled && offlineOrder && String(offlineOrder.sync_status ?? "").toLowerCase() !== "synced") {
+        setIsOfflineOrder(true);
+        setOfflineCustomerName(String(offlineOrder.customer_name ?? ""));
+        setOfflineCustomerPhone(String(offlineOrder.customer_phone ?? ""));
+        setOrderDetails({
+          id: effectiveOrderId,
+          order_type: String(offlineOrder.order_type ?? "TAKEAWAY"),
+          customer_name: String(offlineOrder.customer_name ?? ""),
+          customer_phone: String(offlineOrder.customer_phone ?? ""),
+        } as OrderDetails);
+        setCart(
+          mapOfflineOrderItemsToCart(
+            Array.isArray(offlineOrder.items) ? (offlineOrder.items as OfflineStoredOrderItem[]) : [],
+          ),
+        );
+        return;
+      }
+
+      if (!isCancelled && isOfflineOrder) {
+        setOrderDetails({
+          id: effectiveOrderId,
+          order_type: "TAKEAWAY",
+          customer_name: offlineCustomerName,
+          customer_phone: offlineCustomerPhone,
+        } as OrderDetails);
+        return;
+      }
+
+      const response = await fetch(`${BASE_URL}/api/orders/${effectiveOrderId}/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        throw new Error(`Order fetch failed (${response.status})`);
+      }
+      const data = await response.json();
+      if (isCancelled) return;
+      console.log("ORDER DETAILS:", data);
+      setIsOfflineOrder(false);
+      setOrderDetails(data as OrderDetails);
+      await cacheOrderDetail(data);
+      const existingItems = Array.isArray((data as OrderDetails).items)
+        ? ((data as OrderDetails).items as OrderDetailItem[])
+        : [];
+      setCart(mapExistingOrderItemsToCart(existingItems));
+    };
+
+    void loadOrder().catch(async (err) => {
+      console.error(err);
+      const cachedDetail = await getCachedOrderDetail(effectiveOrderId);
+      if (!cachedDetail) return;
+      if (isCancelled) return;
+      setIsOfflineOrder(false);
+      setOrderDetails(cachedDetail as OrderDetails);
+      const existingItems = Array.isArray((cachedDetail as OrderDetails).items)
+        ? ((cachedDetail as OrderDetails).items as OrderDetailItem[])
+        : [];
+      setCart(mapExistingOrderItemsToCart(existingItems));
+      setPosNotice("Loaded cached order data while offline. Sync when connection returns.");
+    });
+    return () => {
+      isCancelled = true;
+    };
   }, [effectiveOrderId, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ================= FILTER ================= */
@@ -1063,8 +1243,14 @@ export default function SalesTransactionPage() {
   const couponTypeLabel = appliedCoupon
     ? appliedCoupon.discount_type === "PERCENT"
       ? `${Number(appliedCoupon.value || 0).toFixed(2)}%`
+      : appliedCoupon.discount_type === "FREE_ITEM"
+      ? "FREE ITEM"
       : `Rs ${Number(appliedCoupon.value || 0).toFixed(2)}`
     : "";
+  const appliedFreeItemLabel =
+    appliedCoupon?.discount_type === "FREE_ITEM"
+      ? appliedCoupon.free_item || appliedCoupon.free_item_category || "Free Item"
+      : "";
 
   const syncFromPercent = (rawPercent: string, baseTotal: number) => {
     const parsedPercent = parseNonNegative(rawPercent);
@@ -1137,10 +1323,12 @@ export default function SalesTransactionPage() {
       setAppliedCoupon({
         id: Number(data.id),
         code: String(data.code ?? code),
-        discount_type: String(data.discount_type ?? "PERCENT") as "AMOUNT" | "PERCENT",
+        discount_type: String(data.discount_type ?? "PERCENT") as "AMOUNT" | "PERCENT" | "FREE_ITEM",
         value: Number(data.value ?? 0),
         min_order_amount: Number(data.min_order_amount ?? 0),
         max_discount_amount: data.max_discount_amount == null ? null : Number(data.max_discount_amount),
+        free_item: String(data.free_item ?? ""),
+        free_item_category: String(data.free_item_category ?? ""),
       });
       setCouponCodeInput(String(data.code ?? code));
       setCouponError("");
@@ -1191,6 +1379,9 @@ export default function SalesTransactionPage() {
   };
 
   const syncCartItems = async (resolvedOrderId: string) => {
+    if (isOfflineOrder) {
+      throw new Error("This order is still offline and must be synced manually from Profile.");
+    }
     const items = getCartPayloadItems();
 
     const addRes = await fetch(`${BASE_URL}/api/orders/add-items/${resolvedOrderId}/`, {
@@ -1356,7 +1547,7 @@ export default function SalesTransactionPage() {
         setPaying(true);
         setPaymentError("");
 
-        const offlineResult = await createOfflineOrder({
+        const offlineResult = await saveOfflineOrder({
           order_type: orderDetails?.order_type || "TAKEAWAY",
           customer_name: offlineCustomerName || orderDetails?.customer_name || "Customer",
           customer_phone: offlineCustomerPhone || orderDetails?.customer_phone || "",
@@ -1378,7 +1569,10 @@ export default function SalesTransactionPage() {
           payment_method: paymentMethod,
           payment_reference: paymentReference.trim(),
           cash_received: paymentMethod === "CASH" ? Number(cashGiven) : undefined,
-        });
+          status: "COMPLETED",
+          payment_status: "PAID",
+          server_order_id: !isOfflineOrder && effectiveOrderId ? effectiveOrderId : undefined,
+        }, effectiveOrderId);
 
         setShowPaymentModal(false);
         setCart([]);
@@ -1463,6 +1657,39 @@ export default function SalesTransactionPage() {
     try {
       setMarkingPending(true);
       setPaymentError("");
+
+      if (isOfflineOrder || !isOnline()) {
+        const offlineResult = await saveOfflineOrder({
+          order_type: orderDetails?.order_type || "TAKEAWAY",
+          customer_name: offlineCustomerName || orderDetails?.customer_name || "Customer",
+          customer_phone: offlineCustomerPhone || orderDetails?.customer_phone || "",
+          items: cart.map((item) => ({
+            product: item.type === "product" ? item.id : undefined,
+            combo: item.type === "combo" ? item.id : undefined,
+            name: item.name,
+            quantity: item.qty,
+            price: item.price,
+            gst_percent: item.gst_percent,
+            addons: (item.selectedAddons ?? []).map((a) => ({
+              id: a.id,
+              name: a.name,
+              price: a.price,
+              qty: a.qty,
+            })),
+          })),
+          discount_amount: manualDiscountAmount || 0,
+          status: "NEW",
+          payment_status: "UNPAID",
+          server_order_id: !isOfflineOrder && effectiveOrderId ? effectiveOrderId : undefined,
+        }, effectiveOrderId);
+
+        setPosNotice(`Offline pending order saved (${offlineResult.order_id}). Redirecting to Orders...`);
+        setShowPaymentModal(false);
+        setCart([]);
+        window.setTimeout(() => navigate("/staff/orders"), 700);
+        return;
+      }
+
       await syncCartItems(effectiveOrderId);
 
       await fetch(`${BASE_URL}/api/orders/status/${effectiveOrderId}/`, {
@@ -1654,6 +1881,11 @@ export default function SalesTransactionPage() {
       invoiceData?.discount_breakdown?.coupon_discount ??
       0
   );
+  const invoiceFreeItemLabel = (() => {
+    const details = invoiceData?.coupon_details;
+    if (!details || details.discount_type !== "FREE_ITEM") return "";
+    return String(details.free_item || details.free_item_category || "Free Item");
+  })();
 
   return (
     <div className="pos-page min-h-screen p-4 md:p-">
@@ -1661,7 +1893,7 @@ export default function SalesTransactionPage() {
       {!isOnline() && (
         <div className="mb-3 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700">
           <CloudOff className="h-4 w-4" />
-          <span>Offline Mode — Orders will sync automatically when internet returns</span>
+          <span>Offline Mode — Orders are saved locally until you sync them from Profile</span>
         </div>
       )}
       <style>{`
@@ -2151,6 +2383,11 @@ export default function SalesTransactionPage() {
                     Applied: {appliedCoupon.code} ({appliedCoupon.discount_type} {couponTypeLabel}) (- Rs {couponDiscountAmount.toFixed(2)})
                   </p>
                 )}
+                {appliedFreeItemLabel && (
+                  <p className="mt-1 text-[11px] font-semibold text-emerald-700">
+                    Free Item: {appliedFreeItemLabel}
+                  </p>
+                )}
                 {couponError && (
                   <p className="mt-2 text-[11px] font-medium text-rose-700">{couponError}</p>
                 )}
@@ -2164,6 +2401,12 @@ export default function SalesTransactionPage() {
                   <span>Coupon Discount {appliedCoupon ? `(${appliedCoupon.code} - ${appliedCoupon.discount_type})` : ""}</span>
                   <span>- Rs {couponDiscountAmount.toFixed(2)}</span>
                 </div>
+                {appliedFreeItemLabel && (
+                  <div className="flex justify-between text-xs text-emerald-700">
+                    <span>Coupon Free Item</span>
+                    <span>{appliedFreeItemLabel}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-sm font-semibold text-purple-900">
                   <span>Total Discount</span>
                   <span>- Rs {discountAmount.toFixed(2)}</span>
@@ -2461,6 +2704,14 @@ export default function SalesTransactionPage() {
                       ) : (
                         <p className="text-[11px] text-slate-500">No items available in invoice payload.</p>
                       )}
+                      {invoiceFreeItemLabel && (
+                        <div className="grid grid-cols-12 gap-2 border-t border-dashed border-slate-300 pt-1 text-emerald-700">
+                          <p className="col-span-5 truncate">FREE ITEM: {invoiceFreeItemLabel}</p>
+                          <p className="col-span-2 text-right">1</p>
+                          <p className="col-span-2 text-right">0</p>
+                          <p className="col-span-3 text-right">0</p>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -2486,6 +2737,12 @@ export default function SalesTransactionPage() {
                       </span>
                       <span>Rs.{invoiceCouponDiscount.toLocaleString()}</span>
                     </div>
+                    {invoiceFreeItemLabel && (
+                      <div className="flex justify-between text-emerald-700">
+                        <span>Coupon Free Item</span>
+                        <span>{invoiceFreeItemLabel}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between">
                       <span>Total Discount</span>
                       <span>Rs.{Number(invoiceData?.discount || 0).toLocaleString()}</span>

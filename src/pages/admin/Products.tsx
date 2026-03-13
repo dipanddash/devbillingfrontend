@@ -72,6 +72,7 @@ interface Recipe {
 interface IngredientOption {
   id: string;
   name: string;
+  unit: string;
 }
 
 interface ComboItem {
@@ -112,6 +113,46 @@ type ApiRecord = Record<string, unknown>;
 const COMBO_CATEGORY_NAME = "Combo";
 const CATALOG_PRODUCTS = "products";
 const CATALOG_ADDONS = "addons";
+
+const UNIT_FAMILIES: Record<string, Record<string, number>> = {
+  weight: {
+    mg: 0.001,
+    g: 1,
+    kg: 1000,
+    oz: 28.3495,
+    lb: 453.592,
+    ton: 1000000,
+  },
+  volume: {
+    ml: 1,
+    cl: 10,
+    L: 1000,
+    gal: 3785.41,
+  },
+};
+
+const findUnitFamily = (unit: string) => {
+  return Object.values(UNIT_FAMILIES).find((family) => unit in family) ?? null;
+};
+
+const getCompatibleUnits = (baseUnit: string) => {
+  const family = findUnitFamily(baseUnit);
+  if (!family) return [baseUnit];
+  return Object.keys(family);
+};
+
+const convertToBaseUnit = (value: number, fromUnit: string, baseUnit: string) => {
+  if (fromUnit === baseUnit) return value;
+  const fromFamily = findUnitFamily(fromUnit);
+  const baseFamily = findUnitFamily(baseUnit);
+  if (!fromFamily || !baseFamily || fromFamily !== baseFamily) return value;
+
+  const fromFactor = fromFamily[fromUnit];
+  const baseFactor = baseFamily[baseUnit];
+  if (!fromFactor || !baseFactor) return value;
+
+  return (value * fromFactor) / baseFactor;
+};
 
 const initialProductForm: ProductForm = {
   name: "",
@@ -188,6 +229,8 @@ const AdminProducts = () => {
   const [recipeSaving, setRecipeSaving] = useState(false);
   const [newRecipeIngredient, setNewRecipeIngredient] = useState("");
   const [newRecipeQuantity, setNewRecipeQuantity] = useState("");
+  const [newRecipeInputUnit, setNewRecipeInputUnit] = useState("");
+  const [addonIngredientId, setAddonIngredientId] = useState("");
   const [showRecipeSubmitConfirm, setShowRecipeSubmitConfirm] = useState(false);
 
   const getAuthHeaders = () => {
@@ -301,6 +344,7 @@ const AdminProducts = () => {
       const mapped: IngredientOption[] = list.map((item) => ({
         id: String(item.id),
         name: String(item.name ?? item.ingredient_name ?? item.id),
+        unit: String(item.unit ?? "unit"),
       }));
       setIngredients(mapped);
     } catch (err) {
@@ -407,6 +451,33 @@ const AdminProducts = () => {
     [categories, productForm.categoryId]
   );
 
+  const ingredientUnitById = useMemo(() => {
+    const unitMap: Record<string, string> = {};
+    ingredients.forEach((item) => {
+      unitMap[item.id] = item.unit || "unit";
+    });
+    return unitMap;
+  }, [ingredients]);
+
+  const selectedNewRecipeIngredient = useMemo(
+    () => ingredients.find((item) => item.id === newRecipeIngredient) ?? null,
+    [ingredients, newRecipeIngredient]
+  );
+
+  const recipeUnitOptions = useMemo(() => {
+    const baseUnit = selectedNewRecipeIngredient?.unit || "";
+    if (!baseUnit) return [];
+    return getCompatibleUnits(baseUnit);
+  }, [selectedNewRecipeIngredient]);
+
+  useEffect(() => {
+    if (!selectedNewRecipeIngredient) {
+      setNewRecipeInputUnit("");
+      return;
+    }
+    setNewRecipeInputUnit(selectedNewRecipeIngredient.unit);
+  }, [selectedNewRecipeIngredient?.id]);
+
   const setEditMode = (product: Product | null) => {
     setEditProduct(product);
 
@@ -442,11 +513,22 @@ const AdminProducts = () => {
   const openAddAddonModal = () => {
     setEditAddon(null);
     setAddonForm(initialAddonForm);
+    setAddonIngredientId("");
+    if (!ingredients.length) {
+      void fetchIngredients();
+    }
     setShowAddonModal(true);
   };
 
   const openEditAddonModal = (addon: Addon) => {
     setEditAddon(addon);
+    if (!ingredients.length) {
+      void fetchIngredients();
+    }
+    const matchedIngredient = ingredients.find(
+      (item) => item.name.trim().toLowerCase() === addon.name.trim().toLowerCase(),
+    );
+    setAddonIngredientId(matchedIngredient?.id ?? "");
     setAddonForm({
       name: addon.name,
       price: String(addon.price),
@@ -459,6 +541,7 @@ const AdminProducts = () => {
     setSelectedRecipeProduct(product);
     setNewRecipeIngredient("");
     setNewRecipeQuantity("");
+    setNewRecipeInputUnit("");
     setShowRecipeModal(true);
     if (!ingredients.length) {
       await fetchIngredients();
@@ -542,6 +625,7 @@ const AdminProducts = () => {
     setRecipeMode("view");
     setNewRecipeIngredient("");
     setNewRecipeQuantity("");
+    setNewRecipeInputUnit("");
     setShowRecipeSubmitConfirm(false);
   };
 
@@ -561,6 +645,7 @@ const AdminProducts = () => {
   const closeAddonModal = () => {
     setShowAddonModal(false);
     setEditAddon(null);
+    setAddonIngredientId("");
     setAddonForm(initialAddonForm);
   };
 
@@ -890,6 +975,18 @@ const AdminProducts = () => {
       toast.error("Select ingredient and quantity.");
       return;
     }
+
+    const inputQty = Number(newRecipeQuantity);
+    if (!Number.isFinite(inputQty) || inputQty <= 0) {
+      toast.error("Enter a valid quantity.");
+      return;
+    }
+
+    const baseUnit = ingredientUnitById[newRecipeIngredient] || "unit";
+    const fromUnit = newRecipeInputUnit || baseUnit;
+    const normalizedQty = convertToBaseUnit(inputQty, fromUnit, baseUnit);
+    const quantityForApi = String(Number(normalizedQty.toFixed(6)));
+
     setRecipeSaving(true);
     try {
       const res = await fetch(`${API_BASE}/api/products/recipes/`, {
@@ -901,7 +998,7 @@ const AdminProducts = () => {
         body: JSON.stringify({
           product: selectedRecipeProduct.id,
           ingredient: newRecipeIngredient,
-          quantity: newRecipeQuantity,
+          quantity: quantityForApi,
         }),
       });
       if (!res.ok) {
@@ -1572,6 +1669,29 @@ const saveCombo = async () => {
         onClose={closeAddonModal}
       >
         <div className="space-y-4">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-violet-800">Ingredient (from Ingredients Entry)</label>
+            <select
+              value={addonIngredientId}
+              onChange={(e) => {
+                const nextId = e.target.value;
+                setAddonIngredientId(nextId);
+                const selectedIngredient = ingredients.find((item) => item.id === nextId);
+                if (selectedIngredient) {
+                  setAddonForm((prev) => ({ ...prev, name: selectedIngredient.name }));
+                }
+              }}
+              className="w-full border p-2.5 rounded-lg"
+            >
+              <option value="">Select ingredient</option>
+              {ingredients.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <input
             value={addonForm.name}
             onChange={(e) => setAddonForm((prev) => ({ ...prev, name: e.target.value }))}
@@ -1840,9 +1960,14 @@ const saveCombo = async () => {
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-medium">{recipe.ingredient_name || recipe.ingredient}</p>
                       {recipeMode === "view" ? (
-                        <span className="rounded-md bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-700">
-                          Qty: {recipe.quantity}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-md bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-700">
+                            Qty: {recipe.quantity}
+                          </span>
+                          <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
+                            Unit: {ingredientUnitById[recipe.ingredient] || "unit"}
+                          </span>
+                        </div>
                       ) : (
                         <div className="flex items-center gap-2">
                           <input
@@ -1852,6 +1977,9 @@ const saveCombo = async () => {
                             onBlur={(e) => void updateRecipeQuantity(recipe, e.target.value)}
                             className="w-24 rounded-md border p-1.5 text-xs"
                           />
+                          <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
+                            {ingredientUnitById[recipe.ingredient] || "unit"}
+                          </span>
                           <button
                             onClick={() => void deleteRecipeItem(recipe.id)}
                             disabled={recipeSaving}
@@ -1879,7 +2007,7 @@ const saveCombo = async () => {
                 <option value="">Select ingredient</option>
                 {ingredients.map((item) => (
                   <option key={item.id} value={item.id}>
-                    {item.name}
+                    {item.name} ({item.unit})
                   </option>
                 ))}
               </select>
@@ -1891,6 +2019,27 @@ const saveCombo = async () => {
                 placeholder="Quantity (e.g. 0.250)"
                 className="w-full rounded-lg border p-2 text-sm"
               />
+              <select
+                value={newRecipeInputUnit}
+                onChange={(e) => setNewRecipeInputUnit(e.target.value)}
+                disabled={!selectedNewRecipeIngredient}
+                className="w-full rounded-lg border bg-white p-2 text-sm text-slate-700 disabled:bg-slate-50"
+              >
+                {!selectedNewRecipeIngredient ? (
+                  <option value="">Select unit</option>
+                ) : (
+                  recipeUnitOptions.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))
+                )}
+              </select>
+              {selectedNewRecipeIngredient ? (
+                <p className="text-[11px] text-slate-500">
+                  Saved in base unit: <span className="font-semibold">{selectedNewRecipeIngredient.unit}</span>
+                </p>
+              ) : null}
               <button
                 onClick={addRecipeItem}
                 disabled={recipeSaving}

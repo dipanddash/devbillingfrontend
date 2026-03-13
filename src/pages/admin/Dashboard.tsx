@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { TrendingUp, ShoppingBag, Users, DollarSign, type LucideIcon } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar } from "recharts";
 import dashboardBanner from "@/assets/dashboard-banner.jpg";
+import { getOfflineOrders } from "@/offline/orders";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 const TOP_DISH_PLACEHOLDER =
@@ -186,6 +187,7 @@ const AdminDashboard = () => {
           staffRes,
           productsRes,
           combosRes,
+          offlineOrders,
         ] = await Promise.all([
           fetch(`${API_BASE}/api/reports/dashboard/`, { headers: getAuthHeaders() }),
           fetch(`${API_BASE}/api/reports/sales/daily/?period=weekly`, { headers: getAuthHeaders() }),
@@ -196,7 +198,16 @@ const AdminDashboard = () => {
           fetch(`${API_BASE}/api/accounts/staff/`, { headers: getAuthHeaders() }),
           fetch(`${API_BASE}/api/products/products/`, { headers: getAuthHeaders() }),
           fetch(`${API_BASE}/api/products/combos/`, { headers: getAuthHeaders() }),
+          getOfflineOrders(),
         ]);
+
+        const pendingOfflineOrders = offlineOrders.filter(
+          (row) => String(row?.sync_status ?? "").toLowerCase() !== "synced"
+        );
+        const pendingOfflineRevenue = pendingOfflineOrders.reduce(
+          (sum, row) => sum + Number(row?.total_amount ?? 0),
+          0
+        );
 
         const catalogImageById = new Map<string, string>();
         const catalogImageByName = new Map<string, string>();
@@ -327,10 +338,10 @@ const AdminDashboard = () => {
               )
             );
             setSummary((prev) => ({
-              revenue,
-              orders,
+              revenue: revenue + pendingOfflineRevenue,
+              orders: orders + pendingOfflineOrders.length,
               staff,
-              avgOrder,
+              avgOrder: orders + pendingOfflineOrders.length > 0 ? (revenue + pendingOfflineRevenue) / (orders + pendingOfflineOrders.length) : avgOrder,
               revenueChange,
               orderChange,
               aovChange,
@@ -374,10 +385,10 @@ const AdminDashboard = () => {
 
           if (hasKnownSummaryField) {
             setSummary({
-              revenue,
-              orders,
+              revenue: revenue + pendingOfflineRevenue,
+              orders: orders + pendingOfflineOrders.length,
               staff,
-              avgOrder,
+              avgOrder: orders + pendingOfflineOrders.length > 0 ? (revenue + pendingOfflineRevenue) / (orders + pendingOfflineOrders.length) : avgOrder,
               revenueChange: String(s.revenue_change_pct ?? s.revenue_change ?? "+0%"),
               orderChange: String(s.orders_change_pct ?? s.orders_change ?? "+0%"),
               aovChange: String(s.aov_change_pct ?? s.aov_change ?? "+0%"),
@@ -513,7 +524,18 @@ const AdminDashboard = () => {
             type: pretty(String(x.order_type ?? (x.table_name ? "dine_in" : "takeaway"))),
             status: pretty(String(x.status ?? x.payment_status ?? "Pending")),
           }));
-          if (mapped.length > 0) setRecentOrders(mapped);
+          const offlineMapped = pendingOfflineOrders
+            .slice(0, 10)
+            .map((row) => ({
+              id: `#${String(row.server_order_number ?? row.id).slice(0, 12)}`,
+              customer: String(row.customer_name ?? "Walk-in"),
+              items: Array.isArray(row.items) ? row.items.length : 0,
+              amount: money(toNum(row.total_amount)),
+              type: pretty(String(row.order_type ?? "takeaway")),
+              status: "Offline Sync Pending",
+            }));
+          const combinedRecent = [...offlineMapped, ...mapped].slice(0, 10);
+          if (combinedRecent.length > 0) setRecentOrders(combinedRecent);
         }
       } catch (error) {
         console.error("Dashboard load failed:", error);

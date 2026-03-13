@@ -30,6 +30,8 @@ const normalizeUser = (value: unknown): User | null => {
 
 const loadStoredUser = (): User | null => {
   try {
+    const accessToken = localStorage.getItem("access");
+    if (!accessToken) return null;
     const storedUser = localStorage.getItem("user");
     if (!storedUser) return null;
     return normalizeUser(JSON.parse(storedUser));

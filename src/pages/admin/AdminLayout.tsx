@@ -1,7 +1,8 @@
 ﻿import { Outlet, Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { handleEnterPrimaryAction } from "@/lib/enterAction";
-import { LogOut, ChevronDown, User } from "lucide-react";
+import { createAuthFetch } from "@/lib/authFetch";
+import { LogOut, ChevronDown, User, ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 interface NavItem {
@@ -11,17 +12,18 @@ interface NavItem {
 
 const adminNav: NavItem[] = [
   { label: "Dashboard", path: "/admin" },
-  { label: "Billing", path: "/admin/invoices" },
-  { label: "Products", path: "/admin/products" },
+  { label: "Sales Statistics", path: "/admin/invoices" },
+  { label: "Ingredients Entry", path: "/admin/inventory" },
+  { label: "Item Entry", path: "/admin/products" },
   { label: "Offers", path: "/admin/coupons" },
-  { label: "Customers", path: "/admin/customers" },
+  { label: "Customers Data", path: "/admin/customers" },
   { label: "Suppliers", path: "/admin/vendors" },
+  { label: "Purchase", path: "/admin/purchase-entry" },
   { label: "Reports", path: "/admin/reports" },
-  { label: "Inventory", path: "/admin/inventory" },
-  { label: "Assets", path: "/admin/assets" },
-  { label: "Audit", path: "/admin/stock-audit" },
+  { label: "Assets Entry", path: "/admin/assets" },
+  { label: "Stock Audit", path: "/admin/stock-audit" },
   { label: "Gaming", path: "/admin/gaming" },
-  { label: "Team", path: "/admin/staff" },
+  { label: "Staff Management", path: "/admin/staff" },
 ];
 
 
@@ -31,8 +33,22 @@ const AdminLayout = () => {
   const location = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);
   const [showApiLoader, setShowApiLoader] = useState(false);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
   const activeRequestsRef = useRef(0);
   const loaderTimerRef = useRef<number | null>(null);
+  const navScrollRef = useRef<HTMLElement | null>(null);
+
+  const isTypingTarget = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) return false;
+    return Boolean(
+      target.closest("input, textarea, select, [contenteditable='true']")
+    );
+  };
+
+  const scrollNavBy = (delta: number) => {
+    navScrollRef.current?.scrollBy({ left: delta, behavior: "smooth" });
+  };
 
   useEffect(() => {
     const originalFetch = window.fetch.bind(window);
@@ -52,6 +68,16 @@ const AdminLayout = () => {
       return url.startsWith(API_ORIGIN);
     };
 
+    const handleUnauthorized = () => {
+      logout();
+      navigate("/");
+    };
+
+    const authFetch = createAuthFetch(originalFetch, {
+      apiBase: API_ORIGIN,
+      onLogout: handleUnauthorized,
+    });
+
     window.fetch = async (...args: Parameters<typeof fetch>) => {
       const requestUrl = getRequestUrl(args[0]);
       const trackThisRequest = shouldTrackRequest(requestUrl);
@@ -69,7 +95,7 @@ const AdminLayout = () => {
       }
 
       try {
-        return await originalFetch(...args);
+        return await authFetch(...args);
       } finally {
         if (trackThisRequest) {
           activeRequestsRef.current = Math.max(0, activeRequestsRef.current - 1);
@@ -93,15 +119,43 @@ const AdminLayout = () => {
       activeRequestsRef.current = 0;
       setShowApiLoader(false);
     };
-  }, []);
+  }, [logout, navigate]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.defaultPrevented && !isTypingTarget(event.target)) {
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          scrollNavBy(-220);
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          scrollNavBy(220);
+        }
+      }
       handleEnterPrimaryAction(event);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    const navEl = navScrollRef.current;
+    if (!navEl) return;
+
+    const updateScrollState = () => {
+      const maxLeft = Math.max(0, navEl.scrollWidth - navEl.clientWidth);
+      setCanScrollLeft(navEl.scrollLeft > 0);
+      setCanScrollRight(navEl.scrollLeft < maxLeft - 1);
+    };
+
+    updateScrollState();
+    navEl.addEventListener("scroll", updateScrollState);
+    window.addEventListener("resize", updateScrollState);
+    return () => {
+      navEl.removeEventListener("scroll", updateScrollState);
+      window.removeEventListener("resize", updateScrollState);
+    };
+  }, [location.pathname]);
 
   const displayName = (() => {
     const candidate =
@@ -165,7 +219,7 @@ const AdminLayout = () => {
   return (
     <div className="min-h-screen bg-[#fafafa]">
 
-      {/* ━━━ PREMIUM FIXED HEADER ━━━ */}
+      {/* ??? PREMIUM FIXED HEADER ??? */}
       <header className="fixed top-0 z-50 w-full border-b border-gray-200/80 bg-white/95 backdrop-blur-md">
         <div className="mx-auto flex h-14 max-w-[1600px] items-center justify-between px-5 lg:px-8">
 
@@ -179,28 +233,51 @@ const AdminLayout = () => {
           </Link>
 
           {/* CENTER — Navigation */}
-          <nav className="flex items-center gap-0.5">
-            {adminNav.map((item) => {
-              const isActive =
-                item.path === "/admin"
-                  ? location.pathname === "/admin"
-                  : location.pathname.startsWith(item.path);
+          <div className="flex w-full max-w-[1800px] items-center gap-1 px-1">
+            <button
+              type="button"
+              onClick={() => scrollNavBy(-220)}
+              disabled={!canScrollLeft}
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 text-gray-500 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Scroll navigation left"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <nav
+              ref={navScrollRef}
+              className="flex w-full flex-nowrap items-center gap-1 overflow-x-auto px-1 py-1 text-[12px] font-medium tracking-normal text-gray-600 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            >
+              {adminNav.map((item) => {
+                const isActive =
+                  item.path === "/admin"
+                    ? location.pathname === "/admin"
+                    : location.pathname.startsWith(item.path);
 
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`relative px-3 py-1.5 rounded-lg text-[13px] font-medium tracking-[-0.01em] transition-all duration-200 ${
-                    isActive
-                      ? "bg-[#7c3aed]/[0.08] text-[#7c3aed]"
-                      : "text-gray-500 hover:text-gray-900 hover:bg-gray-100/70"
-                  }`}
-                >
-                  {item.label}
-                </Link>
-              );
-            })}
-          </nav>
+                return (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    className={`flex shrink-0 rounded-full px-2 py-1 leading-none transition-all duration-200 ${
+                      isActive
+                        ? "bg-[#7c3aed]/10 text-[#7c3aed]"
+                        : "text-gray-600 hover:bg-gray-100/70 hover:text-gray-900"
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+            <button
+              type="button"
+              onClick={() => scrollNavBy(220)}
+              disabled={!canScrollRight}
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 text-gray-500 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Scroll navigation right"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
 
           {/* RIGHT — User profile */}
           <div className="flex shrink-0 items-center" ref={profileRef}>
@@ -262,12 +339,12 @@ const AdminLayout = () => {
         </div>
       </header>
 
-      {/* ━━━ CONTENT ━━━ */}
+      {/* ??? CONTENT ??? */}
       <main className="mx-auto w-full max-w-[1600px] px-5 pb-8 pt-[72px] lg:px-8">
         <Outlet />
       </main>
 
-      {/* ━━━ API LOADER ━━━ */}
+      {/* ??? API LOADER ??? */}
       {showApiLoader && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 backdrop-blur-sm">
           <div className="flex items-center gap-3 rounded-xl bg-white px-5 py-3 shadow-xl shadow-gray-200/50">
@@ -281,6 +358,7 @@ const AdminLayout = () => {
 };
 
 export default AdminLayout;
+
 
 
 

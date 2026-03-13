@@ -15,6 +15,7 @@ import {
 import { AreaChart, Area } from "recharts";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
+const PAGE_SIZE = 20;
 
 type InvoiceStatus = 'paid' | 'pending' | 'overdue' | 'cancelled';
 
@@ -115,7 +116,10 @@ const Invoices = () => {
   const [invoices, setInvoices] = useState<InvoiceRow[]>(fallbackInvoices);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [daysFilter, setDaysFilter] = useState("30");
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
+  const [exportFrom, setExportFrom] = useState("");
+  const [exportTo, setExportTo] = useState("");
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [loadingInvoicePk, setLoadingInvoicePk] = useState<string | null>(null);
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
@@ -124,6 +128,7 @@ const Invoices = () => {
   const [cancelTargetInvoice, setCancelTargetInvoice] = useState<InvoiceRow | null>(null);
   const [cancelRequestingPk, setCancelRequestingPk] = useState<string | null>(null);
   const [cancelErrorText, setCancelErrorText] = useState("");
+  const [page, setPage] = useState(1);
 
   const getAuthHeaders = () => {
     const token = localStorage.getItem("access");
@@ -405,21 +410,40 @@ const Invoices = () => {
   };
 
   const filtered = invoices.filter((inv) => {
+    const term = search.trim().toLowerCase();
+    const normalizedId = inv.id.replace(/^inv[-\s]?/i, "").toLowerCase();
     const matchSearch =
-      inv.customer.toLowerCase().includes(search.toLowerCase()) ||
-      inv.id.toLowerCase().includes(search.toLowerCase());
+      !term ||
+      inv.customer.toLowerCase().includes(term) ||
+      inv.id.toLowerCase().includes(term) ||
+      normalizedId.includes(term);
 
     const matchStatus = statusFilter === "all" || inv.status === statusFilter;
 
     const invoiceDate = new Date(inv.date);
-    const today = new Date();
-    const pastDate = new Date();
-    pastDate.setDate(today.getDate() - Number(daysFilter));
-
-    const matchDate = invoiceDate >= pastDate;
+    let matchDate = true;
+    if (filterFrom) {
+      const from = new Date(filterFrom);
+      from.setHours(0, 0, 0, 0);
+      matchDate = matchDate && invoiceDate >= from;
+    }
+    if (filterTo) {
+      const to = new Date(filterTo);
+      to.setHours(23, 59, 59, 999);
+      matchDate = matchDate && invoiceDate <= to;
+    }
 
     return matchSearch && matchStatus && matchDate;
   });
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, statusFilter, filterFrom, filterTo, invoices]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const pagedInvoices = filtered.slice(pageStart, pageStart + PAGE_SIZE);
 
   const totalRevenue = invoices
     .filter(inv => inv.status === 'paid')
@@ -452,7 +476,24 @@ const Invoices = () => {
 
   const COLORS = ["#8b5cf6", "#a78bfa", "#c4b5fd"];
 
-  const exportRows = filtered.map((inv) => ({
+  const withinExportRange = (inv: InvoiceRow) => {
+    if (!exportFrom && !exportTo) return true;
+    const invDate = new Date(inv.date);
+    if (Number.isNaN(invDate.getTime())) return false;
+    if (exportFrom) {
+      const from = new Date(exportFrom);
+      from.setHours(0, 0, 0, 0);
+      if (invDate < from) return false;
+    }
+    if (exportTo) {
+      const to = new Date(exportTo);
+      to.setHours(23, 59, 59, 999);
+      if (invDate > to) return false;
+    }
+    return true;
+  };
+
+  const exportRows = filtered.filter(withinExportRange).map((inv) => ({
     Invoice: inv.id,
     Customer: inv.customer,
     Date: inv.date,
@@ -461,11 +502,18 @@ const Invoices = () => {
     Status: inv.status,
   }));
 
+  const exportSuffix = (() => {
+    if (!exportFrom && !exportTo) return new Date().toISOString().slice(0, 10);
+    const from = exportFrom || "start";
+    const to = exportTo || "end";
+    return `${from}-to-${to}`;
+  })();
+
   const handleExportExcel = () => {
     const worksheet = XLSX.utils.json_to_sheet(exportRows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Invoices");
-    XLSX.writeFile(workbook, `invoices-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(workbook, `invoices-${exportSuffix}.xlsx`);
     setShowExportMenu(false);
   };
 
@@ -491,7 +539,7 @@ const Invoices = () => {
       headStyles: { fillColor: [124, 58, 237] },
     });
 
-    doc.save(`invoices-${new Date().toISOString().slice(0, 10)}.pdf`);
+    doc.save(`invoices-${exportSuffix}.pdf`);
     setShowExportMenu(false);
   };
 
@@ -672,6 +720,22 @@ const Invoices = () => {
             <h1 className="mt-2 text-3xl font-bold">Invoices</h1>
             <p className="mt-1 text-sm text-violet-100/90">Manage and track all invoices</p>
           </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-[11px] text-white/90">
+              <input
+                type="date"
+                value={exportFrom}
+                onChange={(e) => setExportFrom(e.target.value)}
+                className="h-8 rounded-md border border-white/20 bg-white/15 px-2 text-[11px] text-white placeholder:text-white/60"
+              />
+              <span className="text-white/70">to</span>
+              <input
+                type="date"
+                value={exportTo}
+                onChange={(e) => setExportTo(e.target.value)}
+                className="h-8 rounded-md border border-white/20 bg-white/15 px-2 text-[11px] text-white placeholder:text-white/60"
+              />
+            </div>
           <div className="relative">
             <button
               onClick={() => setShowExportMenu((prev) => !prev)}
@@ -696,6 +760,7 @@ const Invoices = () => {
                 </button>
               </div>
             )}
+          </div>
           </div>
         </div>
       </section>
@@ -778,16 +843,40 @@ const Invoices = () => {
               placeholder="Search invoices..."
               className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-violet-400"
             />
-            <select
-              value={daysFilter}
-              onChange={(e) => setDaysFilter(e.target.value)}
-              className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm"
-            >
-              <option value="7">Last 7 Days</option>
-              <option value="30">Last 30 Days</option>
-              <option value="90">Last 90 Days</option>
-              <option value="365">Last 1 Year</option>
-            </select>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <input
+                type="date"
+                value={filterFrom}
+                onChange={(e) => setFilterFrom(e.target.value)}
+                className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm"
+              />
+              <input
+                type="date"
+                value={filterTo}
+                onChange={(e) => setFilterTo(e.target.value)}
+                className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-sm"
+              />
+            </div>
+            <div className="rounded-xl border border-violet-200 bg-violet-50/40 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-violet-500">Export Date Range</p>
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <input
+                  type="date"
+                  value={exportFrom}
+                  onChange={(e) => setExportFrom(e.target.value)}
+                  className="w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs text-slate-700"
+                />
+                <input
+                  type="date"
+                  value={exportTo}
+                  onChange={(e) => setExportTo(e.target.value)}
+                  className="w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs text-slate-700"
+                />
+              </div>
+              <p className="mt-2 text-[11px] text-slate-500">
+                Export will include invoices between the selected dates.
+              </p>
+            </div>
             <div className="flex flex-wrap gap-2">
               {['all', 'paid', 'pending', 'overdue', 'cancelled'].map(s => (
                 <button
@@ -822,7 +911,7 @@ const Invoices = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-violet-100">
-              {filtered.map(inv => (
+              {pagedInvoices.map(inv => (
                 <tr key={inv.id} className="transition-colors hover:bg-violet-50/45">
                   <td className="px-6 py-3.5 text-sm font-semibold text-violet-700">{inv.id}</td>
                   <td className="px-6 py-3.5 text-sm text-foreground">{inv.customer}</td>
@@ -856,11 +945,25 @@ const Invoices = () => {
           </table>
         </div>
         <div className="flex items-center justify-between border-t border-violet-100 px-6 py-3">
-          <p className="text-xs text-muted-foreground">Showing {filtered.length} of {invoices.length} invoices</p>
+          <p className="text-xs text-muted-foreground">
+            Showing {filtered.length ? pageStart + 1 : 0}-{Math.min(pageStart + PAGE_SIZE, filtered.length)} of {filtered.length} invoices
+          </p>
           <div className="flex items-center gap-2">
-            <button className="rounded-md border border-violet-200 p-1.5 hover:bg-violet-50"><ChevronLeft className="h-4 w-4" /></button>
-            <span className="text-xs text-muted-foreground">Page 1 of 1</span>
-            <button className="rounded-md border border-violet-200 p-1.5 hover:bg-violet-50"><ChevronRight className="h-4 w-4" /></button>
+            <button
+              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+              disabled={currentPage <= 1}
+              className="rounded-md border border-violet-200 p-1.5 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="text-xs text-muted-foreground">Page {currentPage} of {totalPages}</span>
+            <button
+              onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+              disabled={currentPage >= totalPages}
+              className="rounded-md border border-violet-200 p-1.5 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
         </div>
       </section>

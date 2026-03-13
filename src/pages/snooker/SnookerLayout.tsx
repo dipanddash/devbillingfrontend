@@ -1,7 +1,8 @@
 import { Outlet, Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { createAuthFetch } from "@/lib/authFetch";
 import { LogOut, ChevronDown, User } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface NavItem {
   label: string;
@@ -21,6 +22,48 @@ const SnookerLayout = () => {
   const location = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);
   const displayName = user?.name || user?.username || user?.email || "Snooker Staff";
+
+  useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    const API_ORIGIN = import.meta.env.VITE_API_BASE;
+
+    const getRequestUrl = (input: RequestInfo | URL) => {
+      if (typeof input === "string") return input;
+      if (input instanceof Request) return input.url;
+      return String(input);
+    };
+
+    const shouldTrackRequest = (url: string) => {
+      if (!url) return false;
+      if (url.includes("/api/")) return true;
+      return url.startsWith(API_ORIGIN);
+    };
+
+    const handleUnauthorized = () => {
+      logout();
+      navigate("/");
+    };
+
+    const authFetch = createAuthFetch(originalFetch, {
+      apiBase: API_ORIGIN,
+      onLogout: handleUnauthorized,
+    });
+
+    window.fetch = async (...args: Parameters<typeof fetch>) => {
+      const requestUrl = getRequestUrl(args[0]);
+      const trackThisRequest = shouldTrackRequest(requestUrl);
+
+      const response = await authFetch(...args);
+      if (trackThisRequest && response.status === 401) {
+        handleUnauthorized();
+      }
+      return response;
+    };
+
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, [logout, navigate]);
 
   const handleLogout = async () => {
     const token = localStorage.getItem("access");

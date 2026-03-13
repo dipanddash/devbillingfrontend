@@ -1,5 +1,6 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOffline } from "@/contexts/OfflineContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,7 @@ import {
   Save,
   ShieldCheck,
   Sparkles,
+  UploadCloud,
   UserRound,
   UtensilsCrossed,
 } from "lucide-react";
@@ -35,10 +37,10 @@ const normalizePermissions = (payload: any): string[] => {
   const raw = Array.isArray(payload)
     ? payload
     : Array.isArray(payload?.permissions)
-    ? payload.permissions
-    : Array.isArray(payload?.data?.permissions)
-    ? payload.data.permissions
-    : [];
+      ? payload.permissions
+      : Array.isArray(payload?.data?.permissions)
+        ? payload.data.permissions
+        : [];
 
   return raw
     .map((p: any) => {
@@ -57,10 +59,12 @@ const asArray = (value: unknown): any[] => {
 
 const StaffProfile = () => {
   const { user, setUser } = useAuth();
+  const { isOnline, pendingSyncCount, syncNow, isReady } = useOffline();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncingOfflineData, setSyncingOfflineData] = useState(false);
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -80,12 +84,12 @@ const StaffProfile = () => {
 
   const displayRole = useMemo(
     () => String(profile?.role ?? user?.role ?? "STAFF").replace(/_/g, " "),
-    [profile?.role, user?.role]
+    [profile?.role, user?.role],
   );
 
   const displayName = useMemo(
     () => form.name || user?.name || user?.username || "Staff Member",
-    [form.name, user?.name, user?.username]
+    [form.name, user?.name, user?.username],
   );
 
   const initials = useMemo(() => {
@@ -150,7 +154,7 @@ const StaffProfile = () => {
       }
     };
 
-    loadProfile();
+    void loadProfile();
   }, [token, user?.email, user?.name]);
 
   const handleSave = async (e: React.FormEvent) => {
@@ -233,6 +237,22 @@ const StaffProfile = () => {
     }
   };
 
+  const handleOfflineSync = async () => {
+    if (!isReady || !isOnline || pendingSyncCount === 0 || syncingOfflineData) return;
+
+    try {
+      setSyncingOfflineData(true);
+      setError("");
+      setSuccess("");
+      await syncNow();
+      setSuccess("Offline data synced successfully.");
+    } catch (e: any) {
+      setError(e?.message || "Unable to sync offline data.");
+    } finally {
+      setSyncingOfflineData(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="mx-auto max-w-6xl space-y-4">
@@ -298,7 +318,6 @@ const StaffProfile = () => {
               <UserRound className="h-4 w-4 text-violet-700" />
               Account Details
             </CardTitle>
-            
           </CardHeader>
           <CardContent className="p-5 md:p-6">
             <form onSubmit={handleSave} className="space-y-4">
@@ -383,10 +402,41 @@ const StaffProfile = () => {
           <Card className="overflow-hidden border-violet-200/80 bg-white shadow-[0_18px_50px_rgba(91,33,182,0.16)]">
             <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-violet-50 to-white">
               <CardTitle className="inline-flex items-center gap-2 text-lg">
+                <UploadCloud className="h-4 w-4 text-violet-700" />
+                Offline Sync
+              </CardTitle>
+              <CardDescription>
+                Manually upload locally saved changes whenever internet is available.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 p-5">
+              <div className="rounded-xl border border-violet-100 bg-violet-50/40 px-4 py-3 text-sm text-slate-700">
+                {!isReady
+                  ? "Preparing offline storage..."
+                  : !isOnline
+                    ? "You're offline right now. Reconnect, then use this button to upload pending data."
+                    : pendingSyncCount > 0
+                      ? `${pendingSyncCount} item${pendingSyncCount !== 1 ? "s" : ""} waiting to sync.`
+                      : "No offline data is waiting to sync."}
+              </div>
+              <Button
+                type="button"
+                onClick={handleOfflineSync}
+                disabled={!isReady || !isOnline || pendingSyncCount === 0 || syncingOfflineData}
+                className="h-11 w-full rounded-xl bg-[linear-gradient(120deg,#5b21b6_0%,#6d28d9_50%,#7c3aed_100%)] font-semibold text-white shadow-lg shadow-violet-400/30 hover:opacity-95"
+              >
+                <UploadCloud className="mr-2 h-4 w-4" />
+                {syncingOfflineData ? "Syncing Offline Data..." : "Sync Offline Data"}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="overflow-hidden border-violet-200/80 bg-white shadow-[0_18px_50px_rgba(91,33,182,0.16)]">
+            <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-violet-50 to-white">
+              <CardTitle className="inline-flex items-center gap-2 text-lg">
                 <KeyRound className="h-4 w-4 text-violet-700" />
                 Permissions
               </CardTitle>
-              
             </CardHeader>
             <CardContent className="p-5">
               {permissions.length === 0 ? (
@@ -418,7 +468,6 @@ const StaffProfile = () => {
                 <UtensilsCrossed className="h-4 w-4 text-violet-700" />
                 Shift Snapshot
               </CardTitle>
-              
             </CardHeader>
             <CardContent className="space-y-3 p-5">
               <div className="grid grid-cols-3 gap-2 text-center">
@@ -448,7 +497,7 @@ const StaffProfile = () => {
                         {String(o?.status ?? "NEW")}
                       </Badge>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground inline-flex items-center gap-1">
+                    <p className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
                       <Clock3 className="h-3 w-3" />
                       {String(o?.created_at ?? "").replace("T", " ").slice(0, 16) || "Just now"}
                     </p>
@@ -464,8 +513,3 @@ const StaffProfile = () => {
 };
 
 export default StaffProfile;
-
-
-
-
-

@@ -133,6 +133,26 @@ const SCHEMA = `
     retry_count INTEGER DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS orders_cache (
+    id TEXT PRIMARY KEY,
+    order_ref TEXT,
+    table_name TEXT,
+    customer_name TEXT,
+    items_count INTEGER DEFAULT 0,
+    total_amount REAL DEFAULT 0,
+    order_status TEXT,
+    payment_status TEXT,
+    bill_number TEXT,
+    created_at TEXT,
+    cached_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS order_details_cache (
+    id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    cached_at TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS sync_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_type TEXT NOT NULL,
@@ -232,4 +252,36 @@ export function queryOne<T = Record<string, unknown>>(sql: string, params?: unkn
 /** Generate a UUID v4 for offline records. */
 export function generateUUID(): string {
   return crypto.randomUUID();
+}
+
+export async function resetLocalBusinessData(preserveAuthUsername?: string): Promise<void> {
+  await getDb();
+  if (!db) throw new Error("Database not initialized");
+
+  const tablesToClear = [
+    "categories",
+    "products",
+    "addons",
+    "combos",
+    "customers",
+    "tables_cache",
+    "offline_orders",
+    "orders_cache",
+    "order_details_cache",
+    "sync_queue",
+    "sync_meta",
+  ];
+
+  for (const table of tablesToClear) {
+    db.run(`DELETE FROM ${table}`);
+  }
+
+  const normalizedUsername = preserveAuthUsername?.trim();
+  if (normalizedUsername) {
+    db.run("DELETE FROM auth_cache WHERE username != ?", [normalizedUsername]);
+  } else {
+    db.run("DELETE FROM auth_cache");
+  }
+
+  await persistDb();
 }

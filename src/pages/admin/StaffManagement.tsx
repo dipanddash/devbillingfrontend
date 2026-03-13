@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { AlertCircle, CalendarCheck2, Check, ChevronDown, Clock3, RefreshCw, ShieldCheck, UserCog, Users2, X } from "lucide-react";
+import { AlertCircle, CalendarCheck2, Check, ChevronDown, Eye, EyeOff, RefreshCw, ShieldCheck, UserCog, Users2, X } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 
@@ -89,12 +89,25 @@ const StaffManagement = () => {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [historySearch, setHistorySearch] = useState("");
+  const [attendanceFromDate, setAttendanceFromDate] = useState("");
+  const [attendanceToDate, setAttendanceToDate] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
   const [selected, setSelected] = useState<StaffMember | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [resetPassword, setResetPassword] = useState("");
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, StaffStatus>>(() => {
+    try {
+      const raw = localStorage.getItem("staff_status_overrides_v1");
+      return raw ? (JSON.parse(raw) as Record<string, StaffStatus>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [staffForm, setStaffForm] = useState({
     username: "",
     password: "",
@@ -163,9 +176,12 @@ const StaffManagement = () => {
     };
   };
 
-  const loadAttendanceLogs = async () => {
+  const loadAttendanceLogs = async (fromDate = attendanceFromDate, toDate = attendanceToDate) => {
     try {
       const headers = getAuthHeaders();
+      const qs = new URLSearchParams();
+      if (fromDate) qs.set("from_date", fromDate);
+      if (toDate) qs.set("to_date", toDate);
       const parseList = (payload: unknown) => {
         if (Array.isArray(payload)) return { rows: payload, next: null as string | null };
         const obj = payload as { results?: unknown[]; data?: unknown[]; next?: unknown };
@@ -179,7 +195,8 @@ const StaffManagement = () => {
         return `${API_BASE}${path}`;
       };
 
-      const firstRes = await fetch(`${API_BASE}/api/reports/staff/login-logout/`, { headers });
+      const firstUrl = `${API_BASE}/api/reports/staff/login-logout/${qs.toString() ? `?${qs.toString()}` : ""}`;
+      const firstRes = await fetch(firstUrl, { headers });
       if (!firstRes.ok) throw new Error("Failed to fetch attendance logs");
       const firstPayload = await firstRes.json();
       const firstChunk = parseList(firstPayload);
@@ -250,11 +267,20 @@ const StaffManagement = () => {
             ? (data as { data: unknown[] }).data
             : [];
       const mapped = list.map((row: Record<string, unknown>) => mapStaff(row));
-      setStaff(mapped);
-      if (!mapped.length) {
+      const merged = mapped.map((member) => {
+        const override = statusOverrides[member.id];
+        if (!override) return member;
+        return {
+          ...member,
+          status: override,
+          is_active: override === "ACTIVE",
+        };
+      });
+      setStaff(merged);
+      if (!merged.length) {
         setFetchError("No staff records found.");
       }
-      return mapped;
+      return merged;
     } catch (err) {
       console.error(err);
       setFetchError("Unable to fetch staff records from API.");
@@ -276,7 +302,27 @@ const StaffManagement = () => {
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [attendanceFromDate, attendanceToDate]);
+
+  const applyAttendanceDateFilter = async () => {
+    setRefreshing(true);
+    try {
+      await loadAttendanceLogs(attendanceFromDate, attendanceToDate);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const clearAttendanceDateFilter = async () => {
+    setAttendanceFromDate("");
+    setAttendanceToDate("");
+    setRefreshing(true);
+    try {
+      await loadAttendanceLogs("", "");
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     const onDocClick = (event: MouseEvent) => {
@@ -375,6 +421,31 @@ const StaffManagement = () => {
     }
   };
 
+  const resetStaffPassword = async (member: StaffMember) => {
+    const nextPassword = resetPassword.trim();
+    if (!nextPassword) {
+      alert("Enter a new password to reset.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/accounts/staff/${member.id}/`, {
+        method: "PATCH",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify({ password: nextPassword }),
+      });
+      if (!res.ok) throw new Error("Failed to reset password");
+      setResetPassword("");
+      setShowResetPassword(false);
+      alert("Password reset successfully.");
+    } catch (err) {
+      console.error(err);
+      alert("Failed to reset password.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const deleteStaff = async (member: StaffMember) => {
     if (!confirm(`Delete ${member.name}?`)) return;
     setSaving(true);
@@ -419,12 +490,60 @@ const StaffManagement = () => {
       await loadStaff();
       await loadAttendanceLogs();
       setSelected((prev) => (prev ? { ...prev, is_active: nextActive, status: nextActive ? "ACTIVE" : "INACTIVE" } : null));
+      setStatusOverrides((prev) => {
+        const next = { ...prev };
+        if (nextActive) {
+          delete next[member.id];
+        } else {
+          next[member.id] = "INACTIVE";
+        }
+        localStorage.setItem("staff_status_overrides_v1", JSON.stringify(next));
+        return next;
+      });
       if (nextActive) {
         const resetRows = Number(responsePayload.manual_closing_reset_rows ?? 0);
         if (resetRows > 0) {
           alert(`Staff reactivated. ${resetRows} manual closing row(s) for today were reset to 0 for correction.`);
         }
       }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to update staff status.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const applyStaffStatus = async (member: StaffMember, nextStatus: StaffStatus) => {
+    const isActive = nextStatus === "ACTIVE";
+    setSaving(true);
+    try {
+      let res = await fetch(`${API_BASE}/api/accounts/staff/${member.id}/status/`, {
+        method: "PATCH",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify({ is_active: isActive }),
+      });
+      if (!res.ok) {
+        res = await fetch(`${API_BASE}/api/accounts/staff/${member.id}/`, {
+          method: "PATCH",
+          headers: getAuthHeaders(true),
+          body: JSON.stringify({ is_active: isActive }),
+        });
+      }
+      if (!res.ok) throw new Error("Failed to update status");
+      await loadStaff();
+      await loadAttendanceLogs();
+      setSelected((prev) => (prev ? { ...prev, is_active: isActive, status: nextStatus } : null));
+      setStatusOverrides((prev) => {
+        const next = { ...prev };
+        if (nextStatus === "ACTIVE") {
+          delete next[member.id];
+        } else {
+          next[member.id] = nextStatus;
+        }
+        localStorage.setItem("staff_status_overrides_v1", JSON.stringify(next));
+        return next;
+      });
     } catch (err) {
       console.error(err);
       alert("Failed to update staff status.");
@@ -464,8 +583,8 @@ const StaffManagement = () => {
       const rawName = String(row.staff ?? row.username ?? row.user_name ?? row.name ?? row.email ?? "").trim();
       if (!rawName) continue;
       const date = row.date ? String(row.date) : undefined;
-      const login = composeDateTime(date, row.login_time ?? row.last_login ?? undefined);
-      const logout = composeDateTime(date, row.logout_time ?? row.last_logout ?? undefined);
+      const login = composeDateTime(date, row.login_time ?? undefined);
+      const logout = composeDateTime(date, row.logout_time ?? undefined);
       const entry = { login, logout, rawName };
       const candidates = [
         String(row.staff ?? ""),
@@ -485,6 +604,8 @@ const StaffManagement = () => {
   }, [attendanceLogs]);
 
   const resolveAttendance = (member: StaffMember) => {
+    const byId = attendanceLookup[normalizeKey(member.id)];
+    if (byId) return byId;
     const byUsername = attendanceLookup[normalizeKey(member.username)];
     if (byUsername) return byUsername;
     const byName = attendanceLookup[normalizeKey(member.name)];
@@ -492,9 +613,43 @@ const StaffManagement = () => {
     const emailPrefix = member.email.includes("@") ? member.email.split("@")[0] : member.email;
     const byEmailPrefix = attendanceLookup[normalizeKey(emailPrefix)];
     if (byEmailPrefix) return byEmailPrefix;
+    const byEmail = attendanceLookup[normalizeKey(member.email)];
+    if (byEmail) return byEmail;
     const all = Object.values(attendanceLookup);
     if (all.length === 1 && (member.name === "Unknown" || member.email === "-")) return all[0];
     return undefined;
+  };
+
+  const resolveAllAttendance = (member: StaffMember) => {
+    const keys = new Set<string>();
+    const addKey = (value: string) => {
+      const key = normalizeKey(value);
+      if (key) keys.add(key);
+    };
+    addKey(member.id);
+    addKey(member.username);
+    addKey(member.name);
+    if (member.email && member.email.includes("@")) addKey(member.email.split("@")[0]);
+    if (member.email) addKey(member.email);
+
+    return attendanceLogs
+      .filter((row) => {
+        const raw = String(row.staff ?? row.username ?? row.user_name ?? row.name ?? row.email ?? "").trim();
+        return raw && keys.has(normalizeKey(raw));
+      })
+      .map((row) => {
+        const login = composeDateTime(row.date, row.login_time ?? undefined);
+        const logout = composeDateTime(row.date, row.logout_time ?? undefined);
+        const ts = Math.max(new Date(login || 0).getTime(), new Date(logout || 0).getTime());
+        return {
+          id: `${String(row.staff ?? row.username ?? row.user_name ?? row.name ?? row.email ?? "staff")}-${row.date ?? "na"}-${row.login_time ?? "na"}`,
+          date: row.date ? String(row.date) : "-",
+          login,
+          logout,
+          ts,
+        };
+      })
+      .sort((a, b) => b.ts - a.ts);
   };
 
   const resolveDisplayName = (member: StaffMember) => {
@@ -521,41 +676,93 @@ const StaffManagement = () => {
   }, [staff]);
 
   const attendance = useMemo(() => {
-    const todayIso = new Date().toISOString().slice(0, 10);
-    const todaysLogs = attendanceLogs.filter((row) => {
-      if (row.date) return String(row.date) === todayIso;
-      return Boolean(row.login_time ?? row.last_login);
-    });
-
-    const latestByStaff: Record<string, { staff: string; login?: string; logout?: string }> = {};
-    for (const row of todaysLogs) {
-      const staffName = String(row.staff ?? "").trim();
-      if (!staffName) continue;
-      const key = normalizeKey(staffName);
-      const login = composeDateTime(row.date, row.login_time ?? row.last_login ?? undefined);
-      const logout = composeDateTime(row.date, row.logout_time ?? row.last_logout ?? undefined);
-      const current = latestByStaff[key];
-      if (!current) {
-        latestByStaff[key] = { staff: staffName, login, logout };
-        continue;
+    const diffHours = (start?: string, end?: string) => {
+      if (!start || !end) return 0;
+      const s = new Date(start).getTime();
+      const e = new Date(end).getTime();
+      if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return 0;
+      return (e - s) / 36e5;
+    };
+    const toDateKey = (date?: string, login?: string, logout?: string) => {
+      if (date) return String(date);
+      const ts = login ?? logout;
+      if (!ts) return "";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toISOString().slice(0, 10);
+    };
+    const byStaffDay: Record<
+      string,
+      {
+        staff: string;
+        date: string;
+        punches: { login?: string; logout?: string; hours: number; breakHours: number }[];
       }
-      const currentTs = current.login ? new Date(current.login).getTime() : 0;
-      const nextTs = login ? new Date(login).getTime() : 0;
-      if (nextTs >= currentTs) latestByStaff[key] = { staff: staffName, login, logout };
+    > = {};
+
+    for (const row of attendanceLogs) {
+      const staffName = String(row.staff ?? row.username ?? row.user_name ?? row.name ?? row.email ?? "").trim();
+      if (!staffName) continue;
+      const staffKey = normalizeKey(staffName);
+      if (!staffKey) continue;
+      const login = composeDateTime(row.date, row.login_time ?? undefined);
+      const logout = composeDateTime(row.date, row.logout_time ?? undefined);
+      const dateKey = toDateKey(row.date, login, logout) || "-";
+      const key = `${staffKey}|${dateKey}`;
+      if (!byStaffDay[key]) {
+        byStaffDay[key] = { staff: staffName, date: dateKey, punches: [] };
+      }
+      byStaffDay[key].punches.push({ login, logout, hours: diffHours(login, logout), breakHours: 0 });
     }
 
-    const allToday = Object.values(latestByStaff).sort((a, b) => new Date(b.login || 0).getTime() - new Date(a.login || 0).getTime());
-    const recent = allToday.slice(0, 5);
+    const groups = Object.values(byStaffDay);
+    const punchRows: {
+      id: string;
+      staff: string;
+      date: string;
+      login?: string;
+      logout?: string;
+      breakHours: number;
+      hours: number;
+      ts: number;
+    }[] = [];
 
-    const present = allToday.length;
-    const late = allToday.filter((entry) => {
-      if (!entry.login) return false;
-      const d = new Date(entry.login);
-      return !Number.isNaN(d.getTime()) && d.getHours() >= 10;
-    }).length;
+    for (const group of groups) {
+      group.punches.sort((a, b) => {
+        const aTs = new Date(a.login ?? a.logout ?? 0).getTime();
+        const bTs = new Date(b.login ?? b.logout ?? 0).getTime();
+        return aTs - bTs;
+      });
+      let prevLogoutTs = 0;
+      group.punches.forEach((punch, idx) => {
+        const loginTs = punch.login ? new Date(punch.login).getTime() : 0;
+        const logoutTs = punch.logout ? new Date(punch.logout).getTime() : 0;
+        punch.breakHours = loginTs > 0 && prevLogoutTs > 0 && loginTs > prevLogoutTs ? (loginTs - prevLogoutTs) / 36e5 : 0;
+        if (logoutTs > 0) prevLogoutTs = logoutTs;
+        punchRows.push({
+          id: `${normalizeKey(group.staff)}-${group.date}-${idx}-${loginTs || logoutTs}`,
+          staff: group.staff,
+          date: group.date,
+          login: punch.login,
+          logout: punch.logout,
+          breakHours: punch.breakHours,
+          hours: punch.hours,
+          ts: Math.max(loginTs, logoutTs),
+        });
+      });
+    }
+
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const presentStaffToday = new Set(
+      punchRows
+        .filter((row) => row.date === todayIso && row.login)
+        .map((row) => normalizeKey(row.staff)),
+    );
+    const present = presentStaffToday.size;
     const absent = Math.max(staff.length - present, 0);
+    const recent = punchRows.sort((a, b) => b.ts - a.ts).slice(0, 60);
 
-    return { present, late, absent, recent };
+    return { present, absent, recent };
   }, [attendanceLogs, staff.length]);
 
   const roles = useMemo(() => {
@@ -563,28 +770,131 @@ const StaffManagement = () => {
     return ["ALL", ...unique];
   }, [staff]);
 
+  const staffIndex = useMemo(() => {
+    const byKey: Record<string, StaffMember> = {};
+    const addKey = (value: string, member: StaffMember) => {
+      const key = normalizeKey(value);
+      if (!key) return;
+      if (!byKey[key]) byKey[key] = member;
+    };
+    for (const member of staff) {
+      addKey(member.id, member);
+      addKey(member.username, member);
+      addKey(member.name, member);
+      if (member.email) {
+        addKey(member.email, member);
+        if (member.email.includes("@")) addKey(member.email.split("@")[0], member);
+      }
+    }
+    return byKey;
+  }, [staff]);
+
   const fullAttendanceHistory = useMemo(() => {
-    const toName = (row: AttendanceLog) =>
-      String(row.staff ?? row.username ?? row.user_name ?? row.name ?? row.email ?? "Unknown").trim() || "Unknown";
-    const toRole = (row: AttendanceLog) =>
-      String(row.role ?? row.designation ?? "STAFF");
+    const resolveStaff = (row: AttendanceLog) => {
+      const rawCandidates = [
+        String(row.staff ?? ""),
+        String(row.username ?? ""),
+        String(row.user_name ?? ""),
+        String(row.name ?? ""),
+        String(row.email ?? ""),
+      ]
+        .map((v) => v.trim())
+        .filter(Boolean);
+      for (const candidate of rawCandidates) {
+        const direct = staffIndex[normalizeKey(candidate)];
+        if (direct) return direct;
+        if (candidate.includes("@")) {
+          const emailKey = staffIndex[normalizeKey(candidate.split("@")[0])];
+          if (emailKey) return emailKey;
+        }
+      }
+      return undefined;
+    };
+
+    const toName = (row: AttendanceLog) => {
+      const matched = resolveStaff(row);
+      if (matched) return resolveDisplayName(matched);
+      return String(row.staff ?? row.username ?? row.user_name ?? row.name ?? row.email ?? "Unknown").trim() || "Unknown";
+    };
+    const toRole = (row: AttendanceLog) => {
+      const matched = resolveStaff(row);
+      if (matched) return matched.role;
+      return String(row.role ?? row.designation ?? "STAFF");
+    };
+
+    const diffHours = (start?: string, end?: string) => {
+      if (!start || !end) return 0;
+      const s = new Date(start).getTime();
+      const e = new Date(end).getTime();
+      if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return 0;
+      return (e - s) / 36e5;
+    };
+
+    const toDateKey = (date?: string, login?: string, logout?: string) => {
+      if (date) return String(date);
+      const ts = login ?? logout;
+      if (!ts) return "-";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return "-";
+      return d.toISOString().slice(0, 10);
+    };
 
     const rows = attendanceLogs.map((row, index) => {
-      const login = composeDateTime(row.date, row.login_time ?? row.last_login ?? undefined);
-      const logout = composeDateTime(row.date, row.logout_time ?? row.last_logout ?? undefined);
+      const staff = toName(row);
+      const staffKey = normalizeKey(staff);
+      const role = toRole(row);
+      const login = composeDateTime(row.date, row.login_time ?? undefined);
+      const logout = composeDateTime(row.date, row.logout_time ?? undefined);
       const loginTs = login ? new Date(login).getTime() : 0;
       const logoutTs = logout ? new Date(logout).getTime() : 0;
-      const sortTs = Math.max(loginTs || 0, logoutTs || 0);
+      const date = toDateKey(row.date, login, logout);
+
       return {
-        id: `${toName(row)}-${row.date ?? "na"}-${row.login_time ?? row.last_login ?? "na"}-${index}`,
-        staff: toName(row),
-        date: row.date ? String(row.date) : "-",
-        role: toRole(row),
+        id: `${staffKey}-${date}-${index}-${loginTs || logoutTs}`,
+        staff,
+        staffKey,
+        role,
+        date,
         login,
         logout,
-        sortTs,
+        loginTs,
+        logoutTs,
+        breakHours: 0,
+        hours: diffHours(login, logout),
+        overallHours: 0,
+        sortTs: Math.max(loginTs, logoutTs),
       };
     });
+
+    const rowsByStaffDay = [...rows].sort((a, b) => {
+      if (a.staffKey !== b.staffKey) return a.staffKey.localeCompare(b.staffKey);
+      if (a.date !== b.date) return a.date.localeCompare(b.date);
+      return (a.loginTs || a.logoutTs || 0) - (b.loginTs || b.logoutTs || 0);
+    });
+
+    let lastKey = "";
+    let prevLogoutTs = 0;
+    for (const row of rowsByStaffDay) {
+      const key = `${row.staffKey}|${row.date}`;
+      if (key !== lastKey) {
+        lastKey = key;
+        prevLogoutTs = 0;
+      }
+      if (row.loginTs > 0 && prevLogoutTs > 0 && row.loginTs > prevLogoutTs) {
+        row.breakHours = (row.loginTs - prevLogoutTs) / 36e5;
+      } else {
+        row.breakHours = 0;
+      }
+      if (row.logoutTs > 0) prevLogoutTs = row.logoutTs;
+    }
+
+    const overallByStaff: Record<string, number> = {};
+    for (const row of rows) {
+      overallByStaff[row.staffKey] = (overallByStaff[row.staffKey] ?? 0) + row.hours;
+    }
+    for (const row of rows) {
+      row.overallHours = overallByStaff[row.staffKey] ?? 0;
+    }
 
     const query = historySearch.trim().toLowerCase();
     const filteredRows = rows.filter((row) => {
@@ -597,7 +907,7 @@ const StaffManagement = () => {
     });
 
     return filteredRows.sort((a, b) => b.sortTs - a.sortTs);
-  }, [attendanceLogs, historySearch]);
+    }, [attendanceLogs, historySearch]);
 
   if (loading) {
     return (
@@ -638,6 +948,41 @@ const StaffManagement = () => {
         </div>
       ) : null}
 
+      <div className="flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.06)]">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Attendance From</p>
+          <input
+            type="date"
+            value={attendanceFromDate}
+            onChange={(e) => setAttendanceFromDate(e.target.value)}
+            className="mt-1 h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none focus:border-violet-500"
+          />
+        </div>
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Attendance To</p>
+          <input
+            type="date"
+            value={attendanceToDate}
+            onChange={(e) => setAttendanceToDate(e.target.value)}
+            className="mt-1 h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none focus:border-violet-500"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => void applyAttendanceDateFilter()}
+          className="h-10 rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white transition hover:bg-violet-700"
+        >
+          Apply Date Range
+        </button>
+        <button
+          type="button"
+          onClick={() => void clearAttendanceDateFilter()}
+          className="h-10 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+        >
+          Clear
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_24px_rgba(15,23,42,0.06)]">
           <p className="text-xs uppercase tracking-wide text-slate-500">Total Staff</p>
@@ -657,7 +1002,7 @@ const StaffManagement = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_24px_rgba(15,23,42,0.06)]">
           <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
             <CalendarCheck2 className="h-4 w-4" />
@@ -665,14 +1010,6 @@ const StaffManagement = () => {
           </p>
           <p className="mt-3 text-3xl font-bold text-slate-900">{attendance.present}</p>
           <p className="text-xs text-slate-500">Checked in staff</p>
-        </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_24px_rgba(15,23,42,0.06)]">
-          <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
-            <Clock3 className="h-4 w-4" />
-            Late Arrivals
-          </p>
-          <p className="mt-3 text-3xl font-bold text-amber-700">{attendance.late}</p>
-          <p className="text-xs text-slate-500">Check-in after 10:00 AM</p>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_24px_rgba(15,23,42,0.06)]">
           <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -690,33 +1027,40 @@ const StaffManagement = () => {
         <div className="relative mb-4 flex items-center justify-between">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-700">Live Feed</p>
-            <h2 className="mt-1 text-lg font-bold text-slate-900">Recent Staff Check-ins</h2>
+            <h2 className="mt-1 text-lg font-bold text-slate-900">Recent Punch In / Punch Out</h2>
           </div>
           <span className="rounded-lg border border-violet-200 bg-white/90 px-3 py-1 text-xs font-semibold text-violet-700 shadow-sm">
             {attendance.recent.length} Active Logs
           </span>
         </div>
         {attendance.recent.length === 0 ? (
-          <p className="text-sm text-slate-500">No attendance logs found for today.</p>
+          <p className="text-sm text-slate-500">No attendance logs found.</p>
         ) : (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {attendance.recent.map((entry) => (
-              <div
-                key={entry.staff}
-                className="group relative overflow-hidden rounded-2xl border border-violet-200/70 bg-white/95 px-4 py-3 shadow-[0_10px_24px_rgba(109,40,217,0.1)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_34px_rgba(109,40,217,0.16)]"
-              >
-                <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-violet-500 to-indigo-500" />
-                <p className="pl-2 text-sm font-semibold text-slate-900">{entry.staff}</p>
-                <div className="mt-1 grid grid-cols-1 gap-1 pl-2 text-xs text-slate-600">
-                  <p>
-                    <span className="font-semibold text-emerald-700">In</span>: {formatDateTime(entry.login)}
-                  </p>
-                  <p>
-                    <span className="font-semibold text-indigo-700">Out</span>: {formatDateTime(entry.logout)}
-                  </p>
-                </div>
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-2xl border border-violet-200 bg-white/95">
+            <table className="min-w-full">
+              <thead>
+                <tr className="border-b border-violet-100 bg-violet-50/60">
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-violet-800">Staff</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-violet-800">Date</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-violet-800">Punch In</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-violet-800">Punch Out</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-violet-800">Break Hours</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-violet-800">Working Hours</th>
+                </tr>
+              </thead>
+              <tbody>
+                {attendance.recent.map((entry) => (
+                  <tr key={entry.id} className="border-b border-violet-100/70 hover:bg-violet-50/40">
+                    <td className="px-3 py-2 text-sm font-semibold text-slate-900">{entry.staff}</td>
+                    <td className="px-3 py-2 text-sm text-slate-700">{entry.date}</td>
+                    <td className="px-3 py-2 text-sm text-emerald-700">{formatDateTime(entry.login)}</td>
+                    <td className="px-3 py-2 text-sm text-indigo-700">{formatDateTime(entry.logout)}</td>
+                    <td className="px-3 py-2 text-sm text-amber-700">{entry.breakHours.toFixed(2)}</td>
+                    <td className="px-3 py-2 text-sm text-slate-700">{entry.hours.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -724,9 +1068,9 @@ const StaffManagement = () => {
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-700">Attendance Audit</p>
-            <h2 className="mt-1 text-lg font-bold text-slate-900">Full Staff Login/Logout History</h2>
-            <p className="text-xs text-slate-500">Shows all fetched records in reverse chronological order.</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-700">Attendance Audit</p>
+              <h2 className="mt-1 text-lg font-bold text-slate-900">Full Staff Login/Logout History</h2>
+              <p className="text-xs text-slate-500">Shows every login/logout row separately with break and working hours.</p>
           </div>
           <div className="w-full max-w-xs">
             <input
@@ -748,8 +1092,11 @@ const StaffManagement = () => {
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Staff</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Date</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Role</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Login</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Logout</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Login</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Logout</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Break Hours</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Working Hours</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Overall Hours</th>
                 </tr>
               </thead>
               <tbody>
@@ -760,6 +1107,9 @@ const StaffManagement = () => {
                     <td className="px-4 py-3 text-sm text-slate-700">{entry.role}</td>
                     <td className="px-4 py-3 text-sm text-emerald-700">{formatDateTime(entry.login)}</td>
                     <td className="px-4 py-3 text-sm text-indigo-700">{formatDateTime(entry.logout)}</td>
+                    <td className="px-4 py-3 text-sm text-amber-700">{entry.breakHours.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{entry.hours.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-sm font-semibold text-slate-900">{entry.overallHours.toFixed(2)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -892,7 +1242,7 @@ const StaffManagement = () => {
 
       {selected ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-5xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_35px_90px_rgba(15,23,42,0.4)]">
+          <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_35px_90px_rgba(15,23,42,0.4)]">
             <div className="relative overflow-hidden bg-[linear-gradient(120deg,#111827_0%,#312e81_55%,#4f46e5_100%)] px-6 py-5 text-white">
               <div className="absolute -right-12 -top-16 h-44 w-44 rounded-full bg-white/10 blur-2xl" />
               <div className="relative flex items-start justify-between">
@@ -900,6 +1250,9 @@ const StaffManagement = () => {
                   <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-indigo-200">Staff Profile</p>
                   <h3 className="mt-1 text-2xl font-bold">{resolveDisplayName(selected)}</h3>
                   <p className="text-sm text-indigo-100/90">{selected.email}</p>
+                  <p className="mt-1 text-xs text-indigo-100/80">
+                    Joined: {formatDate(selected.joined_at)}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -911,7 +1264,7 @@ const StaffManagement = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-6 p-6 lg:grid-cols-[280px_minmax(0,1fr)]">
+            <div className="grid max-h-[calc(90vh-140px)] grid-cols-1 gap-6 overflow-y-auto p-6 lg:grid-cols-[280px_minmax(0,1fr)]">
               <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
                 <div className="space-y-3 text-sm text-slate-700">
                   <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
@@ -995,13 +1348,88 @@ const StaffManagement = () => {
                   </div>
                 </div>
 
+                <div className="rounded-2xl border border-violet-200 bg-violet-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-violet-700">Reset Password</p>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <div className="relative flex-1 min-w-[220px]">
+                      <input
+                        type={showResetPassword ? "text" : "password"}
+                        value={resetPassword}
+                        onChange={(e) => setResetPassword(e.target.value)}
+                        placeholder="New password"
+                        className="w-full rounded-xl border border-violet-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-violet-400 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowResetPassword((prev) => !prev)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-violet-600 hover:text-violet-800"
+                        aria-label={showResetPassword ? "Hide password" : "Show password"}
+                      >
+                        {showResetPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => resetStaffPassword(selected)}
+                      disabled={saving}
+                      className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:opacity-60"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-violet-700/80">Set a new password for this staff member.</p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-600">Login / Logout History</p>
+                  <div className="mt-3 max-h-52 overflow-y-auto rounded-xl border border-slate-200">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-slate-50">
+                        <tr>
+                          <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">Date</th>
+                          <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">Login</th>
+                          <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">Logout</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {resolveAllAttendance(selected).length === 0 ? (
+                          <tr>
+                            <td className="px-3 py-2 text-xs text-slate-500" colSpan={3}>No login/logout records.</td>
+                          </tr>
+                        ) : (
+                          resolveAllAttendance(selected).map((row) => (
+                            <tr key={row.id}>
+                              <td className="px-3 py-2 text-xs text-slate-700">{row.date}</td>
+                              <td className="px-3 py-2 text-xs text-emerald-700">{formatDateTime(row.login)}</td>
+                              <td className="px-3 py-2 text-xs text-indigo-700">{formatDateTime(row.logout)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
                 <div className="flex flex-wrap items-center gap-3 pt-2">
                   <button
-                    onClick={() => toggleStaffStatus(selected)}
+                    onClick={() => applyStaffStatus(selected, "INACTIVE")}
                     className="rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-amber-600"
                   >
-                    {selected.is_active ? "Deactivate" : "Activate"}
+                    Mark Absent
                   </button>
+                  <button
+                    onClick={() => applyStaffStatus(selected, "ON_LEAVE")}
+                    className="rounded-xl bg-slate-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
+                  >
+                    Mark On Leave
+                  </button>
+                  {!selected.is_active ? (
+                    <button
+                      onClick={() => applyStaffStatus(selected, "ACTIVE")}
+                      className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                    >
+                      Activate
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => updateStaff(selected)}
                     className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700"
@@ -1054,13 +1482,23 @@ const StaffManagement = () => {
                 placeholder="Username"
                 className="rounded-md border border-purple-200 px-3 py-2 text-sm"
               />
-              <input
-                type="password"
-                value={staffForm.password}
-                onChange={(e) => setStaffForm((prev) => ({ ...prev, password: e.target.value }))}
-                placeholder="Password"
-                className="rounded-md border border-purple-200 px-3 py-2 text-sm"
-              />
+              <div className="relative">
+                <input
+                  type={showCreatePassword ? "text" : "password"}
+                  value={staffForm.password}
+                  onChange={(e) => setStaffForm((prev) => ({ ...prev, password: e.target.value }))}
+                  placeholder="Password"
+                  className="w-full rounded-md border border-purple-200 px-3 py-2 pr-10 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCreatePassword((prev) => !prev)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-purple-600 hover:text-purple-800"
+                  aria-label={showCreatePassword ? "Hide password" : "Show password"}
+                >
+                  {showCreatePassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
               <input
                 value={staffForm.email}
                 onChange={(e) => setStaffForm((prev) => ({ ...prev, email: e.target.value }))}

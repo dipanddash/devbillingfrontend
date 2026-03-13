@@ -122,6 +122,25 @@ async function refreshCache(): Promise<void> {
   }
 }
 
+async function triggerServerOfflineSync(): Promise<void> {
+  const token = localStorage.getItem("access");
+  if (!token || !isOnline()) return;
+
+  const res = await fetch(`${API_BASE}/api/sync/trigger/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ batch_size: 50, max_batches: 10 }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "Unknown error");
+    throw new Error(`Server sync trigger failed: ${res.status} ${text}`);
+  }
+}
+
 /** Run one sync cycle: process pending queue items in batches. */
 async function runSyncCycle(): Promise<void> {
   if (_isSyncing || !isOnline()) return;
@@ -130,19 +149,22 @@ async function runSyncCycle(): Promise<void> {
   try {
     const pending = await getPendingItems(BATCH_SIZE);
     const ready = pending.filter(isReadyForRetry);
+    let touchedSyncState = false;
 
-    if (ready.length === 0) {
-      _isSyncing = false;
-      return;
+    if (ready.length > 0) {
+      // Mark items as syncing
+      for (const item of ready) {
+        await markSyncing(item.id);
+      }
+
+      // Push browser-side queued items first.
+      await pushToServer(ready);
+      touchedSyncState = true;
     }
 
-    // Mark items as syncing
-    for (const item of ready) {
-      await markSyncing(item.id);
-    }
-
-    // Push to server
-    await pushToServer(ready);
+    // Also trigger server-side SQLite -> Neon sync so backend-offline writes
+    // created through the normal API surface are promoted automatically.
+    await triggerServerOfflineSync();
 
     // Notify listeners
     if (_onSyncStatusChange) {
@@ -150,8 +172,12 @@ async function runSyncCycle(): Promise<void> {
       _onSyncStatusChange(count);
     }
 
-    // Cleanup old synced items periodically
-    await cleanupSyncedItems();
+    if (touchedSyncState) {
+      // Cleanup old synced items periodically.
+      await cleanupSyncedItems();
+    }
+
+    await refreshCache();
   } catch (err) {
     console.error("[Sync] Cycle error:", err);
   } finally {
@@ -164,7 +190,7 @@ export function startSyncWorker(): void {
   if (_syncTimer) return;
 
   // Run immediately on start
-  runSyncCycle();
+  void runSyncCycle();
 
   // Then run on interval
   _syncTimer = setInterval(runSyncCycle, SYNC_INTERVAL);
@@ -172,9 +198,9 @@ export function startSyncWorker(): void {
   // Listen for connectivity changes
   onConnectivityChange(async (online) => {
     if (online) {
-      // Just came back online — refresh cache and sync
-      await refreshCache();
-      runSyncCycle();
+      // Just came back online — run a full sync cycle for both
+      // frontend queued data and backend sqlite queued data.
+      await runSyncCycle();
     }
   });
 }
@@ -190,6 +216,8 @@ export function stopSyncWorker(): void {
 /** Force an immediate sync attempt. */
 export async function forceSyncNow(): Promise<void> {
   await runSyncCycle();
+  await triggerServerOfflineSync();
+  await refreshCache();
 }
 
 /** Fetch and cache a fresh snapshot from the server. */

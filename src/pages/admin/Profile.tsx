@@ -1,6 +1,7 @@
-﻿import { useEffect, useMemo, useState } from "react";
-import { ShieldCheck, UserRound, Mail, BadgeCheck, AlertTriangle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ShieldCheck, UserRound, Mail, BadgeCheck, AlertTriangle, UploadCloud } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOffline } from "@/contexts/OfflineContext";
 import {
   REPORT_DEFINITIONS,
   fetchStaffReportAccess,
@@ -9,6 +10,8 @@ import {
   type StaffReportAccessByKey,
   type StaffUserOption,
 } from "@/lib/reportsConfig";
+import { addToSyncQueue } from "@/offline/queue";
+import { generateUUID, resetLocalBusinessData } from "@/offline";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 
@@ -32,8 +35,10 @@ type ProfileData = {
 
 const AdminProfile = () => {
   const { user } = useAuth();
+  const { isOnline, pendingSyncCount, syncNow, isReady } = useOffline();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [syncingOfflineData, setSyncingOfflineData] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<ProfileData>({});
   const [form, setForm] = useState({ name: "", phone: "" });
@@ -194,9 +199,25 @@ const AdminProfile = () => {
   };
 
   const handleSystemReset = async () => {
+    if (resetting) return;
     setResetting(true);
     setResetMessage(null);
     try {
+      const preservedUsername = String(profile.username || user?.username || "").trim() || undefined;
+
+      if (!isOnline) {
+        await resetLocalBusinessData(preservedUsername);
+        await addToSyncQueue(
+          "system",
+          "reset",
+          { superuser_id: String(profile.id || user?.id || "") },
+          generateUUID(),
+        );
+        setResetMessage("Offline system reset applied locally. Online reset will run on next sync.");
+        setResetStep(0);
+        return;
+      }
+
       const res = await fetch(`${API_BASE}/api/accounts/system-reset/`, {
         method: "POST",
         headers: getAuthHeaders(true),
@@ -206,6 +227,7 @@ const AdminProfile = () => {
         setResetMessage(body.detail || "System reset failed.");
         return;
       }
+      await resetLocalBusinessData(preservedUsername);
       setResetMessage(body.detail || "System reset complete.");
       setResetStep(0);
     } catch (err) {
@@ -216,19 +238,37 @@ const AdminProfile = () => {
     }
   };
 
+  const handleOfflineSync = async () => {
+    if (!isReady || !isOnline || pendingSyncCount === 0 || syncingOfflineData) return;
+
+    setSyncingOfflineData(true);
+    setError(null);
+    setAccessMessage(null);
+    try {
+      await syncNow();
+      setAccessMessage("Offline data synced successfully.");
+      window.setTimeout(() => setAccessMessage(null), 2200);
+    } catch (err) {
+      console.error(err);
+      setError("Unable to sync offline data.");
+    } finally {
+      setSyncingOfflineData(false);
+    }
+  };
+
   const displayName = useMemo(
     () => profile.name || profile.username || user?.name || user?.username || user?.email || "-",
-    [profile.name, profile.username, user]
+    [profile.name, profile.username, user],
   );
 
   const displayEmail = useMemo(
     () => profile.email || user?.email || "-",
-    [profile.email, user]
+    [profile.email, user],
   );
 
   const displayRole = useMemo(
     () => permissions.roleLabel || profile.role || user?.role || "ADMIN",
-    [permissions.roleLabel, profile.role, user?.role]
+    [permissions.roleLabel, profile.role, user?.role],
   );
 
   const access = useMemo(
@@ -239,7 +279,7 @@ const AdminProfile = () => {
         : ["Capabilities are not provided by /api/accounts/me/permissions/."],
       accessScope: permissions.accessScope,
     }),
-    [displayRole, permissions]
+    [displayRole, permissions],
   );
 
   if (loading) {
@@ -256,9 +296,9 @@ const AdminProfile = () => {
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-700">Admin Identity</p>
             <h1 className="mt-1 text-3xl font-bold text-slate-900">My Profile</h1>
-            <p className="mt-1 text-sm text-slate-600">User details, role capabilities, and access scope.</p>
+            <p className="mt-1 text-sm text-slate-600">User details, role capabilities, access scope, and manual offline sync.</p>
           </div>
-          {(displayRole === "ADMIN") && (
+          {displayRole === "ADMIN" && (
             <button
               onClick={() => setResetStep(1)}
               className="flex items-center gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 shadow transition hover:bg-rose-100"
@@ -300,7 +340,7 @@ const AdminProfile = () => {
               <Mail className="h-4 w-4" />
               Email
             </p>
-            <p className="text-sm font-semibold text-slate-900 break-all">{displayEmail}</p>
+            <p className="break-all text-sm font-semibold text-slate-900">{displayEmail}</p>
           </div>
           <div className="rounded-2xl border border-violet-200 bg-white p-4 shadow-[0_8px_20px_rgba(15,23,42,0.06)]">
             <p className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-violet-700">
@@ -343,21 +383,48 @@ const AdminProfile = () => {
         </div>
 
         <div className="rounded-3xl border border-violet-200/70 bg-white p-5 shadow-[0_12px_26px_rgba(15,23,42,0.08)]">
-          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-violet-700">Accessible Modules</h2>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {access.accessScope.length ? (
-              access.accessScope.map((moduleName) => (
-                <span
-                  key={moduleName}
-                  className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700"
-                >
-                  {moduleName}
-                </span>
-              ))
-            ) : (
-              <p className="text-sm text-slate-500">No modules returned by `/api/accounts/me/permissions/`.</p>
-            )}
+          <div className="flex items-center gap-2">
+            <UploadCloud className="h-4 w-4 text-violet-700" />
+            <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-violet-700">Offline Sync</h2>
           </div>
+          <p className="mt-1 text-sm text-slate-500">
+            Manually upload locally saved changes when the connection is back.
+          </p>
+          <div className="mt-3 rounded-2xl border border-violet-100 bg-violet-50/50 px-4 py-3 text-sm text-slate-700">
+            {!isReady
+              ? "Preparing offline storage..."
+              : !isOnline
+                ? "You're offline right now. Reconnect, then use this button to sync pending data."
+                : pendingSyncCount > 0
+                  ? `${pendingSyncCount} item${pendingSyncCount !== 1 ? "s" : ""} waiting to sync.`
+                  : "No offline data is waiting to sync."}
+          </div>
+          <button
+            onClick={() => void handleOfflineSync()}
+            disabled={!isReady || !isOnline || pendingSyncCount === 0 || syncingOfflineData}
+            className="mt-4 rounded-xl bg-[linear-gradient(135deg,#7c3aed_0%,#5b21b6_100%)] px-4 py-2 text-xs font-semibold text-white shadow-[0_10px_20px_rgba(79,70,229,0.24)] transition hover:opacity-95 disabled:opacity-50"
+          >
+            {syncingOfflineData ? "Syncing Offline Data..." : "Sync Offline Data"}
+          </button>
+          {accessMessage ? <p className="mt-3 text-xs text-emerald-700">{accessMessage}</p> : null}
+        </div>
+      </div>
+
+      <div className="rounded-3xl border border-violet-200/70 bg-white p-5 shadow-[0_12px_26px_rgba(15,23,42,0.08)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-violet-700">Accessible Modules</h2>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {access.accessScope.length ? (
+            access.accessScope.map((moduleName) => (
+              <span
+                key={moduleName}
+                className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700"
+              >
+                {moduleName}
+              </span>
+            ))
+          ) : (
+            <p className="text-sm text-slate-500">No modules returned by `/api/accounts/me/permissions/`.</p>
+          )}
         </div>
       </div>
 
@@ -406,7 +473,6 @@ const AdminProfile = () => {
           >
             Save Report Access
           </button>
-          {accessMessage ? <p className="text-xs text-emerald-700">{accessMessage}</p> : null}
         </div>
 
         {selectedStaffId ? (
@@ -473,14 +539,17 @@ const AdminProfile = () => {
                   <h2 className="text-lg font-bold text-slate-900">Reset System Data</h2>
                 </div>
                 <p className="mt-4 text-sm text-slate-700">
-                  This action will <strong>remove all application data</strong>  including categories, products, orders, payments, inventory, staff accounts, customers, assets, and all related records.
+                  This action will <strong>remove all application data</strong> including categories, products, orders, payments, inventory, staff accounts, customers, assets, and all related records.
                 </p>
                 <p className="mt-2 text-sm text-slate-700">
                   Only your superuser account will be preserved.
                 </p>
                 <div className="mt-6 flex justify-end gap-3">
                   <button
-                    onClick={() => { setResetStep(0); setResetMessage(null); }}
+                    onClick={() => {
+                      setResetStep(0);
+                      setResetMessage(null);
+                    }}
                     className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
                   >
                     Cancel
@@ -508,7 +577,10 @@ const AdminProfile = () => {
                 </p>
                 <div className="mt-6 flex justify-end gap-3">
                   <button
-                    onClick={() => { setResetStep(0); setResetMessage(null); }}
+                    onClick={() => {
+                      setResetStep(0);
+                      setResetMessage(null);
+                    }}
                     className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
                   >
                     Cancel
@@ -531,7 +603,3 @@ const AdminProfile = () => {
 };
 
 export default AdminProfile;
-
-
-
-

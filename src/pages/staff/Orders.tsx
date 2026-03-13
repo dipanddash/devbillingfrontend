@@ -1,5 +1,8 @@
 ﻿import StatusBadge from "@/components/StatusBadge";
 import RefreshButton from "@/components/RefreshButton";
+import { getOfflineOrders } from "@/offline/orders";
+import { cacheOrderDetail, cacheOrders, getCachedOrders } from "@/offline/cache";
+import { isOnline } from "@/offline/network";
 import {
   AlertCircle,
   BadgeIndianRupee,
@@ -11,6 +14,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
@@ -27,6 +31,9 @@ interface OrderRow {
   paymentStatus: string;
   time: string;
   bill: string;
+  source?: "server" | "offline";
+  syncStatus?: string;
+  serverId?: string;
 }
 
 interface InvoiceItem {
@@ -117,6 +124,7 @@ const getLogoDataUrl = async (): Promise<string | null> => {
 
 const Orders = () => {
   const token = localStorage.getItem("access");
+  const navigate = useNavigate();
 
   const toBadgeStatus = (paymentStatus: unknown, rawStatus: unknown): OrderRow["status"] => {
     const payment = String(paymentStatus ?? "").toUpperCase();
@@ -147,18 +155,60 @@ const Orders = () => {
   } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
+  const isEditableUnpaidOrder = (order: OrderRow) => {
+    const payment = String(order.paymentStatus || "").toUpperCase();
+    const status = String(order.status || "").toLowerCase();
+    return payment !== "PAID" && payment !== "REFUNDED" && status !== "cancelled";
+  };
+
   const loadOrders = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     try {
-      const res = await fetch(`${BASE_URL}/api/orders/list/`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const offlineRows = await getOfflineOrders();
+      let data: Array<Record<string, unknown>> = [];
 
-      const data = (await res.json()) as Array<Record<string, unknown>>;
+      if (isOnline()) {
+        try {
+          const res = await fetch(`${BASE_URL}/api/orders/list/`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          data = (await res.json()) as Array<Record<string, unknown>>;
+          await cacheOrders(data);
+
+          const editableOrderIds = data
+            .filter((order) => {
+              const payment = String(order.payment_status ?? "").toUpperCase();
+              const status = String(order.status ?? "").toUpperCase();
+              return payment !== "PAID" && payment !== "REFUNDED" && status !== "CANCELLED";
+            })
+            .map((order) => String(order.id ?? ""))
+            .filter(Boolean);
+
+          await Promise.all(
+            editableOrderIds.map(async (orderId) => {
+              try {
+                const detailRes = await fetch(`${BASE_URL}/api/orders/${orderId}/`, {
+                  headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!detailRes.ok) return;
+                const detail = await detailRes.json();
+                await cacheOrderDetail(detail);
+              } catch (error) {
+                console.warn("Order detail cache failed", orderId, error);
+              }
+            }),
+          );
+        } catch (error) {
+          console.warn("Falling back to cached orders", error);
+          data = (await getCachedOrders()) as Array<Record<string, unknown>>;
+        }
+      } else {
+        data = (await getCachedOrders()) as Array<Record<string, unknown>>;
+      }
 
       const formatted = data.map((order) => ({
         id: String(order.id),
-        orderRef: String(order.order_id ?? order.bill_number ?? order.id ?? ""),
+        orderRef: String(order.order_id ?? order.order_ref ?? order.bill_number ?? order.id ?? ""),
         table: (order.table_name as string) || "TakeAway",
         customer: (order.customer_name as string) || "Walk-in",
         items: Number(order.items_count || 0),
@@ -170,9 +220,49 @@ const Orders = () => {
           minute: "2-digit",
         }),
         bill: String(order.bill_number || ""),
+        source: "server" as const,
+        syncStatus: "synced",
       }));
 
-      setOrders(formatted);
+      const pendingOfflineIds = new Set(
+        offlineRows
+          .filter((row) => String(row?.sync_status ?? "").toLowerCase() !== "synced")
+          .map((row) => String(row?.server_id ?? row?.id ?? "")),
+      );
+
+      const dedupedFormatted = formatted.filter((order) => !pendingOfflineIds.has(order.id));
+
+      const pendingOffline = offlineRows
+        .filter((row) => String(row?.sync_status ?? "").toLowerCase() !== "synced")
+        .map((row) => {
+          const serverId = String(row.server_id ?? "");
+          const mirroredServer = serverId ? formatted.find((order) => order.id === serverId) : undefined;
+          const paymentStatus = String(row.payment_status ?? mirroredServer?.paymentStatus ?? "OFFLINE_PENDING_SYNC");
+          const rawStatus = String(row.status ?? mirroredServer?.status ?? "pending").toUpperCase();
+
+          return {
+            id: serverId || String(row.id),
+            orderRef: mirroredServer?.orderRef || String(row.server_order_number ?? row.id).slice(0, 12),
+            table:
+              mirroredServer?.table ||
+              (String(row.order_type ?? "").toUpperCase() === "DINE_IN" ? "Offline" : "Takeaway"),
+            customer: mirroredServer?.customer || String(row.customer_name ?? "").trim() || "Walk-in",
+            items: Array.isArray(row.items) ? row.items.length : mirroredServer?.items || 0,
+            total: `Rs ${Number(row.total_amount ?? 0).toFixed(2)}`,
+            status: toBadgeStatus(paymentStatus, rawStatus),
+            paymentStatus,
+            time: new Date(String(row.created_at ?? Date.now())).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+            bill: mirroredServer?.bill || String(row.server_bill_number ?? "Pending Sync"),
+            source: "offline" as const,
+            syncStatus: String(row.sync_status ?? "pending"),
+            serverId: serverId || undefined,
+          };
+        });
+
+      setOrders([...pendingOffline, ...dedupedFormatted]);
     } catch (err) {
       console.error("Failed to load orders", err);
     } finally {
@@ -193,6 +283,10 @@ const Orders = () => {
 
   const closeModal = () => {
     setSelectedOrder(null);
+  };
+
+  const openOrderInPos = (orderId: string) => {
+    navigate(`/staff/pos?order=${encodeURIComponent(orderId)}`);
   };
 
   const confirmPayment = async () => {
@@ -744,13 +838,37 @@ const Orders = () => {
                               Invoice
                             </button>
                           </>
+                        ) : o.source === "offline" ? (
+                          <>
+                            {isEditableUnpaidOrder(o) && (
+                              <button
+                                onClick={() => openOrderInPos(o.serverId || o.id)}
+                                className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-50"
+                              >
+                                Edit
+                              </button>
+                            )}
+                            <span className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
+                              Offline Sync Pending
+                            </span>
+                          </>
                         ) : o.status !== "cancelled" ? (
-                          <button
-                            onClick={() => openPaymentModal(o.id)}
-                            className="rounded-lg bg-[linear-gradient(135deg,#7c3aed_0%,#5b21b6_100%)] px-3 py-1.5 text-xs font-semibold text-white shadow-[0_8px_18px_rgba(91,33,182,0.28)] transition hover:opacity-95"
-                          >
-                            Pay Now
-                          </button>
+                          <>
+                            {isEditableUnpaidOrder(o) && (
+                              <button
+                                onClick={() => openOrderInPos(o.id)}
+                                className="rounded-lg border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-700 transition hover:bg-purple-50"
+                              >
+                                Edit
+                              </button>
+                            )}
+                            <button
+                              onClick={() => openPaymentModal(o.id)}
+                              className="rounded-lg bg-[linear-gradient(135deg,#7c3aed_0%,#5b21b6_100%)] px-3 py-1.5 text-xs font-semibold text-white shadow-[0_8px_18px_rgba(91,33,182,0.28)] transition hover:opacity-95"
+                            >
+                              Pay Now
+                            </button>
+                          </>
                         ) : null}
                       </div>
                     </td>

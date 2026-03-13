@@ -21,17 +21,15 @@ interface Ingredient {
   min_stock: string
 }
 
-const INVENTORY_UNITS = [
-  'kg',
-  'g',
-  'L',
-  'ml',
-  'pcs',
-  'pack',
-  'box',
-  'bottle',
-  'dozen',
+const UNIT_GROUPS = [
+  { label: 'Weight', color: '#7c3aed', options: ['kg', 'g', 'mg', 'lb', 'oz', 'ton'] as const },
+  { label: 'Volume', color: '#2563eb', options: ['L', 'ml', 'cl', 'gal'] as const },
+  { label: 'Count', color: '#0891b2', options: ['pcs', 'unit', 'dozen', 'pair', 'set'] as const },
+  { label: 'Pack/Container', color: '#f59e0b', options: ['pack', 'box', 'bottle', 'can', 'jar', 'sachet', 'tray', 'bag', 'bundle'] as const },
+  { label: 'Length/Area', color: '#16a34a', options: ['m', 'cm', 'mm', 'ft', 'inch', 'sheet', 'roll'] as const },
 ] as const
+
+const INVENTORY_UNITS = UNIT_GROUPS.flatMap((group) => group.options)
 
 const Inventory = () => {
   const navigate = useNavigate()
@@ -554,12 +552,9 @@ const Modal = ({
   (() => {
     const unitId = ingredient ? 'editUnit' : 'addUnit'
     const selectedUnit = ingredient?.unit || INVENTORY_UNITS[0]
-    const unitOptions = INVENTORY_UNITS.includes(selectedUnit as typeof INVENTORY_UNITS[number])
-      ? INVENTORY_UNITS
-      : [...INVENTORY_UNITS, selectedUnit]
     return (
   <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
-    <div className="bg-white w-[520px] rounded-2xl p-6 space-y-5 shadow-2xl border border-violet-200">
+    <div className="bg-white w-[500px] rounded-2xl p-5 space-y-4 shadow-2xl border border-violet-200">
 
       <h2 className="text-lg font-semibold text-violet-950">{title}</h2>
 
@@ -567,18 +562,25 @@ const Modal = ({
         id={ingredient ? 'editName' : 'addName'}
         defaultValue={ingredient?.name}
         placeholder="Name"
-        className="w-full px-4 py-2.5 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
+        className="w-full px-4 py-2 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
       />
 
       <select
         id={unitId}
         defaultValue={selectedUnit}
-        className="w-full px-4 py-2.5 border border-violet-200 rounded-xl outline-none focus:border-violet-400 bg-white"
+        className="w-full px-4 py-2 border border-violet-200 rounded-xl outline-none focus:border-violet-400 bg-white"
       >
-        {unitOptions.map((unit) => (
-          <option key={unit} value={unit}>
-            {unit}
-          </option>
+        {!INVENTORY_UNITS.includes(selectedUnit as typeof INVENTORY_UNITS[number]) ? (
+          <option value={selectedUnit}>{selectedUnit}</option>
+        ) : null}
+        {UNIT_GROUPS.map((group) => (
+          <optgroup key={group.label} label={group.label} style={{ color: group.color, fontWeight: 700 }}>
+            {group.options.map((unit) => (
+              <option key={unit} value={unit}>
+                {unit}
+              </option>
+            ))}
+          </optgroup>
         ))}
       </select>
 
@@ -587,7 +589,7 @@ const Modal = ({
         defaultValue={ingredient?.current_stock}
         type="number"
         placeholder="Current Stock"
-        className="w-full px-4 py-2.5 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
+        className="w-full px-4 py-2 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
       />
 
       <input
@@ -595,7 +597,7 @@ const Modal = ({
         defaultValue={ingredient?.min_stock}
         type="number"
         placeholder="Minimum Stock"
-        className="w-full px-4 py-2.5 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
+        className="w-full px-4 py-2 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
       />
 
       <div className="flex justify-end gap-4">

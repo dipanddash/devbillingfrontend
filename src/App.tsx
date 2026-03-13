@@ -45,7 +45,8 @@ const queryClient = new QueryClient();
 
 const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode; allowedRoles: 'admin' | 'staff' | 'snooker' }) => {
   const { user } = useAuth();
-  if (!user) return <Navigate to="/" replace />;
+  const token = typeof window !== "undefined" ? localStorage.getItem("access") : null;
+  if (!user || !token) return <Navigate to="/" replace />;
   if (allowedRoles === 'admin' && !isAdminRole(user.role)) return <Navigate to={isSnookerStaffRole(user.role) ? "/snooker" : "/staff"} replace />;
   if (allowedRoles === 'staff' && (isAdminRole(user.role) || isSnookerStaffRole(user.role))) return <Navigate to={isAdminRole(user.role) ? "/admin" : "/snooker"} replace />;
   if (allowedRoles === 'snooker' && !isSnookerStaffRole(user.role)) return <Navigate to={isAdminRole(user.role) ? "/admin" : "/staff"} replace />;
@@ -71,6 +72,7 @@ const AppRoutes = () => {
         <Route path="assets" element={<Assets />} />
         <Route path="stock-audit" element={<StockAudit />} />
         <Route path="gaming" element={<GamingSessions />} />
+        <Route path="purchase-entry" element={<StaffPurchaseEntry />} />
         <Route path="payments" element={<Navigate to="/admin/vendors" replace />} />
         <Route path="settings" element={<Navigate to="/admin/vendors" replace />} />
         <Route path="profile" element={<AdminProfile />} />
@@ -88,7 +90,6 @@ const AppRoutes = () => {
         <Route path="reports" element={<StaffReports />} />
         <Route path="attendance" element={<StaffAttendance />} />
         <Route path="manual-closing" element={<StaffManualClosing />} />
-        <Route path="purchase-entry" element={<StaffPurchaseEntry />} />
       </Route>
 
       <Route path="/snooker" element={<ProtectedRoute allowedRoles="snooker"><SnookerLayout /></ProtectedRoute>}>

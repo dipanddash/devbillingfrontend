@@ -2,6 +2,7 @@
 import { useNavigate } from "react-router-dom";
 import KPICard from "@/components/KPICard";
 import StatusBadge from "@/components/StatusBadge";
+import { getOfflineOrders } from "@/offline/orders";
 import {
   ArrowRight,
   CalendarDays,
@@ -154,6 +155,7 @@ const StaffDashboard = () => {
           meRes,
           permissionsRes,
           paymentRes,
+          offlineOrders,
         ] = await Promise.all([
           fetch(API.dashboard, { headers: authHeaders }),
           fetch(API.peakTime, { headers: authHeaders }),
@@ -163,12 +165,29 @@ const StaffDashboard = () => {
           fetch(API.me, { headers: authHeaders }),
           fetch(API.permissions, { headers: authHeaders }),
           fetch(API.paymentMethod, { headers: authHeaders }),
+          getOfflineOrders(),
         ]);
+
+        const pendingOfflineOrders = offlineOrders
+          .filter((row) => String(row?.sync_status ?? "").toLowerCase() !== "synced")
+          .map((row) => ({
+            id: String(row.id),
+            order_id: String(row.server_order_number ?? row.id).slice(0, 12),
+            bill_number: String(row.server_bill_number ?? ""),
+            customer_name: String(row.customer_name ?? "").trim() || "Walk-in",
+            total_amount: Number(row.total_amount ?? 0),
+            order_type: String(row.order_type ?? "TAKEAWAY"),
+            status: "PENDING",
+            payment_status: "OFFLINE_PENDING_SYNC",
+            created_at: String(row.created_at ?? new Date().toISOString()),
+            offline_only: true,
+          }));
 
         let todayOrders: any[] = [];
         if (todayRes.ok) {
           todayOrders = asArray(await todayRes.json());
         }
+        const combinedTodayOrders = [...pendingOfflineOrders, ...todayOrders];
 
         if (dashboardRes.ok) {
           const dashboardRaw = await dashboardRes.json();
@@ -248,11 +267,12 @@ const StaffDashboard = () => {
             ["Total Sales", "Total Revenue", "Gross Revenue", "Revenue"],
             revenueFromRoot
           );
-          const fallbackRevenue = todayOrders
+          const fallbackRevenue = combinedTodayOrders
             .filter(
               (o) =>
                 String(o?.payment_status ?? "").toUpperCase() === "PAID" ||
-                String(o?.status ?? "").toUpperCase() === "COMPLETED"
+                String(o?.status ?? "").toUpperCase() === "COMPLETED" ||
+                Boolean(o?.offline_only)
             )
             .reduce(
               (sum, o) =>
@@ -289,20 +309,20 @@ const StaffDashboard = () => {
             ["Repeat Customers", "Repeat Customer Rate", "Repeat Rate"],
             repeatTrendFromRoot
           );
-          const bills = metricBills > 0 ? metricBills : todayOrders.length;
-          const completed = todayOrders.filter(
+          const bills = metricBills > 0 ? metricBills + pendingOfflineOrders.length : combinedTodayOrders.length;
+          const completed = combinedTodayOrders.filter(
             (o) => String(o?.status ?? "").toUpperCase() === "COMPLETED"
           ).length;
-          const paid = todayOrders.filter(
+          const paid = combinedTodayOrders.filter(
             (o) => String(o?.payment_status ?? "").toUpperCase() === "PAID"
-          ).length;
-          const total = todayOrders.length;
+          ).length + pendingOfflineOrders.length;
+          const total = combinedTodayOrders.length;
 
           const conversion = total > 0 ? Math.round((completed / total) * 100) : 0;
           const collectionRate = completed > 0 ? Math.round((paid / completed) * 100) : 0;
 
           const freq = new Map<string, number>();
-          todayOrders.forEach((o) => {
+          combinedTodayOrders.forEach((o) => {
             const name = String(o?.customer_name ?? "").trim();
             if (!name) return;
             freq.set(name, (freq.get(name) ?? 0) + 1);
@@ -354,7 +374,7 @@ const StaffDashboard = () => {
             setLiveRevenueTrend(trend);
           } else {
             const byHour = new Map<string, { revenue: number; bills: number }>();
-            todayOrders.forEach((order) => {
+            combinedTodayOrders.forEach((order) => {
               const createdAt = String(order?.created_at ?? order?.created ?? "");
               const date = createdAt ? new Date(createdAt) : null;
               if (!date || Number.isNaN(date.getTime())) return;
@@ -374,7 +394,7 @@ const StaffDashboard = () => {
           }
         } else {
           const byHour = new Map<string, { revenue: number; bills: number }>();
-          todayOrders.forEach((order) => {
+          combinedTodayOrders.forEach((order) => {
             const createdAt = String(order?.created_at ?? order?.created ?? "");
             const date = createdAt ? new Date(createdAt) : null;
             if (!date || Number.isNaN(date.getTime())) return;
@@ -393,16 +413,16 @@ const StaffDashboard = () => {
         }
 
         {
-          const pending = todayOrders.filter((o) =>
+          const pending = combinedTodayOrders.filter((o) =>
             ["NEW", "PENDING"].includes(String(o?.status ?? "").toUpperCase())
           ).length;
-          const cooking = todayOrders.filter((o) =>
+          const cooking = combinedTodayOrders.filter((o) =>
             ["IN_PROGRESS", "COOKING"].includes(String(o?.status ?? "").toUpperCase())
           ).length;
-          const ready = todayOrders.filter((o) =>
+          const ready = combinedTodayOrders.filter((o) =>
             ["READY"].includes(String(o?.status ?? "").toUpperCase())
           ).length;
-          const served = todayOrders.filter((o) =>
+          const served = combinedTodayOrders.filter((o) =>
             ["COMPLETED", "SERVED"].includes(String(o?.status ?? "").toUpperCase())
           ).length;
 
@@ -417,7 +437,7 @@ const StaffDashboard = () => {
         if (recentRes.ok) {
           const recentPayload = await recentRes.json();
           const recentApiRows = asArray(recentPayload).slice(0, 10);
-          const todaySorted = [...todayOrders]
+          const todaySorted = [...combinedTodayOrders]
             .sort((a, b) => {
               const aTs = new Date(String(a?.created_at ?? 0)).getTime();
               const bTs = new Date(String(b?.created_at ?? 0)).getTime();
@@ -726,6 +746,9 @@ const StaffDashboard = () => {
                 <p className="mt-1 text-xs text-muted-foreground">
                   {String(item?.order_type ?? "ORDER")} - {String(item?.customer_name ?? "Walk-in")}
                 </p>
+                {item?.offline_only && (
+                  <p className="mt-1 text-[11px] font-semibold text-amber-700">Offline sync pending</p>
+                )}
                 <p className="mt-2 text-sm font-semibold text-success">
                   Rs {asNumber(item?.total_amount ?? item?.total ?? item?.grand_total ?? item?.amount).toFixed(0)}
                 </p>

@@ -213,6 +213,8 @@ const STAFF_ATTENDANCE_COLUMNS: ReportColumn[] = [
 
 const STAFF_LOGIN_COLUMNS: ReportColumn[] = [
   { key: "staff_name", label: "Staff Name" },
+  { key: "punch_in", label: "Punch In" },
+  { key: "punch_out", label: "Punch Out" },
   { key: "login_time", label: "Login Time" },
   { key: "logout_time", label: "Logout Time" },
   { key: "duration", label: "Duration" },
