@@ -247,7 +247,7 @@ const StaffProfile = () => {
       await syncNow();
       setSuccess("Offline data synced successfully.");
     } catch (e: any) {
-      setError(e?.message || "Unable to sync offline data.");
+      setError(e?.message || "Unable to sync data.");
     } finally {
       setSyncingOfflineData(false);
     }
@@ -412,12 +412,12 @@ const StaffProfile = () => {
             <CardContent className="space-y-4 p-5">
               <div className="rounded-xl border border-violet-100 bg-violet-50/40 px-4 py-3 text-sm text-slate-700">
                 {!isReady
-                  ? "Preparing offline storage..."
+                  ? "Preparing sync status..."
                   : !isOnline
-                    ? "You're offline right now. Reconnect, then use this button to upload pending data."
+                    ? "Sync is available only in online mode."
                     : pendingSyncCount > 0
                       ? `${pendingSyncCount} item${pendingSyncCount !== 1 ? "s" : ""} waiting to sync.`
-                      : "No offline data is waiting to sync."}
+                      : "No pending data to sync."}
               </div>
               <Button
                 type="button"

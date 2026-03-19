@@ -1,9 +1,7 @@
 import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
-import { Eye, EyeOff, Globe, ShieldCheck, Zap, CloudOff } from "lucide-react";
-import { cacheAuthCredentials, offlineLogin, fetchAndCacheSnapshot } from "@/offline";
-import { isOnline } from "@/offline/network";
+import { Eye, EyeOff, Globe, ShieldCheck, Zap } from "lucide-react";
 
 const ROLES = [
   { key: "ADMIN" as const, label: "Admin" },
@@ -21,7 +19,6 @@ const Login = () => {
   >("ADMIN");
   const [error, setError] = useState("");
   const [isSigningIn, setIsSigningIn] = useState(false);
-  const [isOfflineLogin, setIsOfflineLogin] = useState(false);
   const navigate = useNavigate();
 
   const extractErrorMessage = (payload: unknown, fallback: string) => {
@@ -56,42 +53,13 @@ const Login = () => {
     return null;
   };
 
-  /** Try offline login using cached credentials. */
-  const tryOfflineLogin = async (): Promise<boolean> => {
-    try {
-      const result = await offlineLogin(username, password);
-      if (!result) return false;
-
-      const role = ((result.userData.role as string) || "").toUpperCase().trim();
-      const roleError = validateRoleMatch(role);
-      if (roleError) {
-        setError(roleError);
-        return true; // Handled, don't fall through
-      }
-
-      // Use cached tokens and user data
-      localStorage.setItem("access", result.accessToken);
-      localStorage.setItem("refresh", result.refreshToken);
-      localStorage.setItem("user", JSON.stringify(result.userData));
-      setUser(result.userData as any);
-      setIsOfflineLogin(true);
-
-      navigateByRole(role);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSigningIn) return;
     setError("");
     setIsSigningIn(true);
-    setIsOfflineLogin(false);
 
     try {
-      // Try online login first
       const loginResponse = await fetch(
         `${import.meta.env.VITE_API_BASE}/api/accounts/login/`,
         {
@@ -132,26 +100,9 @@ const Login = () => {
       localStorage.setItem("user", JSON.stringify(loginData));
       setUser(loginData);
 
-      // Cache credentials for future offline login
-      cacheAuthCredentials(username, password, loginData, tokenData.access, tokenData.refresh).catch(() => {});
-
-      // Cache server data for offline use (non-blocking)
-      fetchAndCacheSnapshot().catch(() => {});
-
       navigateByRole(role);
     } catch (err: unknown) {
-      // If online login failed due to network error, try offline login
-      const isNetworkError = err instanceof TypeError && (
-        err.message.includes("fetch") || err.message.includes("network") || err.message.includes("Failed")
-      );
-
-      if (isNetworkError || !isOnline()) {
-        const offlineSuccess = await tryOfflineLogin();
-        if (offlineSuccess) return;
-        setError("You are offline. No cached credentials found for this account. Please login online first.");
-      } else {
-        setError(err instanceof Error ? err.message : "Login failed");
-      }
+      setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setIsSigningIn(false);
     }
@@ -230,14 +181,6 @@ const Login = () => {
             <p className="mt-1.5 text-[15px] text-gray-500">
               Sign in to your account to continue
             </p>
-
-            {/* Offline indicator on login page */}
-            {!isOnline() && (
-              <div className="mt-4 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-[13px] text-amber-700">
-                <CloudOff className="h-4 w-4 shrink-0" />
-                <span>You are offline. Previously authenticated users can still sign in.</span>
-              </div>
-            )}
 
             {/* Role switcher */}
             <div className="mt-7 rounded-full bg-gray-100 p-1">

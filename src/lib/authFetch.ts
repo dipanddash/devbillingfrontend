@@ -1,6 +1,3 @@
-import { buildOfflineFallbackResponse } from "@/lib/offlineApiFallback";
-import { forceOfflineMode, isOnline } from "@/offline/network";
-
 type AuthFetchOptions = {
   apiBase: string;
   onLogout: () => void;
@@ -24,7 +21,6 @@ const PUBLIC_PATHS = [
 
 let refreshInFlight: Promise<string | null> | null = null;
 let authBlockedUntil = 0;
-let networkBlockedUntil = 0;
 let logoutNotifiedAt = 0;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 20_000;
 
@@ -120,24 +116,6 @@ const handleAuthFailure = (onLogout: () => void) => {
   notifyLogout(onLogout);
 };
 
-const offlineAwareFallback = async (url: string, init?: RequestInit): Promise<Response> => {
-  const fallback = await buildOfflineFallbackResponse(url, init);
-  if (fallback) return fallback;
-  return new Response(
-    JSON.stringify({
-      detail: "Offline mode. Data may be limited until connectivity returns.",
-      code: "OFFLINE_MODE",
-    }),
-    {
-      status: 503,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Offline-Mode": "true",
-      },
-    },
-  );
-};
-
 export const createAuthFetch = (
   originalFetch: typeof fetch,
   { apiBase, onLogout }: AuthFetchOptions,
@@ -152,11 +130,6 @@ export const createAuthFetch = (
     const method = String(init?.method ?? "GET").toUpperCase();
     const apiCall = isApiRequest(url, apiBase);
 
-    const isHealthProbe = PUBLIC_PATHS.some((path) => url.includes(path));
-    if (apiCall && !isHealthProbe && (!navigator.onLine || !isOnline() || Date.now() < networkBlockedUntil)) {
-      return offlineAwareFallback(url, init);
-    }
-
     if (Date.now() < authBlockedUntil && apiCall && !shouldSkipAuth(url)) {
       return new Response(
         JSON.stringify({ detail: "Authentication expired. Please login again.", code: "AUTH_EXPIRED" }),
@@ -166,9 +139,6 @@ export const createAuthFetch = (
 
     let token = localStorage.getItem("access");
     if (apiCall && !shouldSkipAuth(url) && !token) {
-      if (method === "GET" && (!navigator.onLine || !isOnline())) {
-        return offlineAwareFallback(url, init);
-      }
       handleAuthFailure(onLogout);
       return new Response(
         JSON.stringify({ detail: "Authentication required", code: "AUTH_MISSING" }),
@@ -201,9 +171,7 @@ export const createAuthFetch = (
     try {
       firstResponse = await originalFetch(firstInput, firstInit);
     } catch {
-      networkBlockedUntil = Date.now() + 15_000;
-      forceOfflineMode();
-      return offlineAwareFallback(url, init);
+      throw new Error("Network request failed.");
     }
 
     if (firstResponse.status !== 401 || shouldSkipRetry(url)) return firstResponse;
@@ -234,9 +202,7 @@ export const createAuthFetch = (
     try {
       retryResponse = await originalFetch(retryInput, retryInit);
     } catch {
-      networkBlockedUntil = Date.now() + 15_000;
-      forceOfflineMode();
-      return offlineAwareFallback(url, init);
+      throw new Error("Network request failed.");
     }
 
     if (retryResponse.status === 401) {

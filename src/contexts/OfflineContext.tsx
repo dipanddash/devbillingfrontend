@@ -2,16 +2,7 @@
  * React context that exposes offline system state to the entire app.
  * Provides: isOnline, pendingSyncCount, lastSyncedAt, and sync controls.
  */
-import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
-import {
-  initOffline,
-  isOnline as checkIsOnline,
-  onConnectivityChange,
-  getPendingSyncCount,
-  onSyncStatusChange,
-  forceSyncNow,
-  fetchAndCacheSnapshot,
-} from "@/offline";
+import { createContext, useContext, useCallback } from "react";
 
 interface OfflineContextType {
   /** Whether the app is currently connected to the backend. */
@@ -29,53 +20,20 @@ interface OfflineContextType {
 const OfflineContext = createContext<OfflineContextType | undefined>(undefined);
 
 export const OfflineProvider = ({ children }: { children: React.ReactNode }) => {
-  const [online, setOnline] = useState(checkIsOnline());
-  const [pendingCount, setPendingCount] = useState(0);
-  const [isReady, setIsReady] = useState(false);
-  const initRef = useRef(false);
-
-  useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
-
-    // Initialize offline system
-    initOffline().then(async () => {
-      setIsReady(true);
-      const count = await getPendingSyncCount();
-      setPendingCount(count);
-    });
-
-    // Listen for connectivity changes
-    const unsubscribe = onConnectivityChange((isOnline) => {
-      setOnline(isOnline);
-    });
-
-    // Listen for sync status changes
-    onSyncStatusChange((count) => {
-      setPendingCount(count);
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, []);
-
   const syncNow = useCallback(async () => {
-    await forceSyncNow();
-    const count = await getPendingSyncCount();
-    setPendingCount(count);
+    return;
   }, []);
 
   const refreshCache = useCallback(async () => {
-    await fetchAndCacheSnapshot();
+    return;
   }, []);
 
   return (
     <OfflineContext.Provider
       value={{
-        isOnline: online,
-        pendingSyncCount: pendingCount,
-        isReady,
+        isOnline: true,
+        pendingSyncCount: 0,
+        isReady: true,
         syncNow,
         refreshCache,
       }}

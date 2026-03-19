@@ -250,7 +250,7 @@ const AdminProfile = () => {
       window.setTimeout(() => setAccessMessage(null), 2200);
     } catch (err) {
       console.error(err);
-      setError("Unable to sync offline data.");
+      setError("Unable to sync data.");
     } finally {
       setSyncingOfflineData(false);
     }
@@ -296,7 +296,7 @@ const AdminProfile = () => {
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-700">Admin Identity</p>
             <h1 className="mt-1 text-3xl font-bold text-slate-900">My Profile</h1>
-            <p className="mt-1 text-sm text-slate-600">User details, role capabilities, access scope, and manual offline sync.</p>
+            <p className="mt-1 text-sm text-slate-600">User details, role capabilities, access scope, and manual data sync.</p>
           </div>
           {displayRole === "ADMIN" && (
             <button
@@ -392,12 +392,12 @@ const AdminProfile = () => {
           </p>
           <div className="mt-3 rounded-2xl border border-violet-100 bg-violet-50/50 px-4 py-3 text-sm text-slate-700">
             {!isReady
-              ? "Preparing offline storage..."
+              ? "Preparing sync status..."
               : !isOnline
-                ? "You're offline right now. Reconnect, then use this button to sync pending data."
+                ? "Sync is available only in online mode."
                 : pendingSyncCount > 0
                   ? `${pendingSyncCount} item${pendingSyncCount !== 1 ? "s" : ""} waiting to sync.`
-                  : "No offline data is waiting to sync."}
+                  : "No pending data to sync."}
           </div>
           <button
             onClick={() => void handleOfflineSync()}

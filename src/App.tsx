@@ -39,7 +39,6 @@ import StaffManualClosing from "./pages/staff/ManualClosing";
 import StaffPurchaseEntry from "./pages/staff/PurchaseEntry";
 import NotFound from "./pages/NotFound";
 import { OfflineProvider } from "./contexts/OfflineContext";
-import OfflineIndicator from "./components/OfflineIndicator";
 import AppErrorBoundary from "./components/AppErrorBoundary";
 
 const queryClient = new QueryClient();
@@ -118,7 +117,6 @@ const App = () => {
           <AuthProvider>
             <OfflineProvider>
               <AppErrorBoundary>
-                <OfflineIndicator />
                 <AppRoutes />
               </AppErrorBoundary>
             </OfflineProvider>
