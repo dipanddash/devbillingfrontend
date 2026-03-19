@@ -1,5 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { AlertCircle, CalendarCheck2, Check, ChevronDown, Eye, EyeOff, RefreshCw, ShieldCheck, UserCog, Users2, X } from "lucide-react";
+import { toast } from "sonner";
+import ConfirmActionDialog from "@/components/ConfirmActionDialog";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 
@@ -100,6 +102,7 @@ const StaffManagement = () => {
   const [showCreatePassword, setShowCreatePassword] = useState(false);
   const [resetPassword, setResetPassword] = useState("");
   const [showResetPassword, setShowResetPassword] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<StaffMember | null>(null);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, StaffStatus>>(() => {
     try {
       const raw = localStorage.getItem("staff_status_overrides_v1");
@@ -129,6 +132,18 @@ const StaffManagement = () => {
     if (apiKey) headers["X-API-KEY"] = apiKey;
     if (withJson) headers["Content-Type"] = "application/json";
     return headers;
+  };
+
+  const parseErrorMessage = async (res: Response, fallback: string) => {
+    const body = await res.json().catch(() => ({}));
+    const data = body as Record<string, unknown>;
+    if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
+    if (typeof data.error === "string" && data.error.trim()) return data.error;
+    if (Array.isArray(data.detail) && data.detail.length > 0) return String(data.detail[0]);
+    if (Array.isArray(data.non_field_errors) && data.non_field_errors.length > 0) {
+      return String(data.non_field_errors[0]);
+    }
+    return fallback;
   };
 
   const mapStaff = (row: Record<string, unknown>): StaffMember => {
@@ -366,7 +381,7 @@ const StaffManagement = () => {
         headers: getAuthHeaders(true),
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error("Failed to create staff");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to create staff."));
       setCreateOpen(false);
       setStaffForm({
         username: "",
@@ -382,9 +397,10 @@ const StaffManagement = () => {
       });
       await loadStaff();
       await loadAttendanceLogs();
+      toast.success("Staff created successfully.");
     } catch (err) {
       console.error(err);
-      alert("Failed to create staff.");
+      toast.error(err instanceof Error ? err.message : "Failed to create staff.");
     } finally {
       setSaving(false);
     }
@@ -409,13 +425,14 @@ const StaffManagement = () => {
           is_active: member.is_active,
         }),
       });
-      if (!res.ok) throw new Error("Failed to update staff");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to update staff."));
       await loadStaff();
       await loadAttendanceLogs();
       setSelected(null);
+      toast.success("Staff updated successfully.");
     } catch (err) {
       console.error(err);
-      alert("Failed to update staff.");
+      toast.error(err instanceof Error ? err.message : "Failed to update staff.");
     } finally {
       setSaving(false);
     }
@@ -424,7 +441,7 @@ const StaffManagement = () => {
   const resetStaffPassword = async (member: StaffMember) => {
     const nextPassword = resetPassword.trim();
     if (!nextPassword) {
-      alert("Enter a new password to reset.");
+      toast.error("Enter a new password to reset.");
       return;
     }
     setSaving(true);
@@ -434,33 +451,35 @@ const StaffManagement = () => {
         headers: getAuthHeaders(true),
         body: JSON.stringify({ password: nextPassword }),
       });
-      if (!res.ok) throw new Error("Failed to reset password");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to reset password."));
       setResetPassword("");
       setShowResetPassword(false);
-      alert("Password reset successfully.");
+      toast.success("Password reset successfully.");
     } catch (err) {
       console.error(err);
-      alert("Failed to reset password.");
+      toast.error(err instanceof Error ? err.message : "Failed to reset password.");
     } finally {
       setSaving(false);
     }
   };
 
-  const deleteStaff = async (member: StaffMember) => {
-    if (!confirm(`Delete ${member.name}?`)) return;
+  const deleteStaff = async () => {
+    if (!deleteTarget) return;
     setSaving(true);
     try {
-      const res = await fetch(`${API_BASE}/api/accounts/staff/${member.id}/`, {
+      const res = await fetch(`${API_BASE}/api/accounts/staff/${deleteTarget.id}/`, {
         method: "DELETE",
         headers: getAuthHeaders(),
       });
-      if (!res.ok) throw new Error("Failed to delete staff");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to delete staff."));
       await loadStaff();
       await loadAttendanceLogs();
       setSelected(null);
+      setDeleteTarget(null);
+      toast.success("Staff deleted successfully.");
     } catch (err) {
       console.error(err);
-      alert("Failed to delete staff.");
+      toast.error(err instanceof Error ? err.message : "Failed to delete staff.");
     } finally {
       setSaving(false);
     }
@@ -486,7 +505,7 @@ const StaffManagement = () => {
           body: JSON.stringify({ is_active: nextActive }),
         });
       }
-      if (!res.ok) throw new Error("Failed to update status");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to update staff status."));
       await loadStaff();
       await loadAttendanceLogs();
       setSelected((prev) => (prev ? { ...prev, is_active: nextActive, status: nextActive ? "ACTIVE" : "INACTIVE" } : null));
@@ -503,12 +522,18 @@ const StaffManagement = () => {
       if (nextActive) {
         const resetRows = Number(responsePayload.manual_closing_reset_rows ?? 0);
         if (resetRows > 0) {
-          alert(`Staff reactivated. ${resetRows} manual closing row(s) for today were reset to 0 for correction.`);
+          toast.success(
+            `Staff reactivated. ${resetRows} manual closing row(s) were reset for today.`,
+          );
+        } else {
+          toast.success("Staff status updated successfully.");
         }
+      } else {
+        toast.success("Staff status updated successfully.");
       }
     } catch (err) {
       console.error(err);
-      alert("Failed to update staff status.");
+      toast.error(err instanceof Error ? err.message : "Failed to update staff status.");
     } finally {
       setSaving(false);
     }
@@ -530,7 +555,7 @@ const StaffManagement = () => {
           body: JSON.stringify({ is_active: isActive }),
         });
       }
-      if (!res.ok) throw new Error("Failed to update status");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to update staff status."));
       await loadStaff();
       await loadAttendanceLogs();
       setSelected((prev) => (prev ? { ...prev, is_active: isActive, status: nextStatus } : null));
@@ -544,9 +569,10 @@ const StaffManagement = () => {
         localStorage.setItem("staff_status_overrides_v1", JSON.stringify(next));
         return next;
       });
+      toast.success("Staff status updated successfully.");
     } catch (err) {
       console.error(err);
-      alert("Failed to update staff status.");
+      toast.error(err instanceof Error ? err.message : "Failed to update staff status.");
     } finally {
       setSaving(false);
     }
@@ -1412,12 +1438,14 @@ const StaffManagement = () => {
                 <div className="flex flex-wrap items-center gap-3 pt-2">
                   <button
                     onClick={() => applyStaffStatus(selected, "INACTIVE")}
+                    disabled={saving}
                     className="rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-amber-600"
                   >
                     Mark Absent
                   </button>
                   <button
                     onClick={() => applyStaffStatus(selected, "ON_LEAVE")}
+                    disabled={saving}
                     className="rounded-xl bg-slate-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
                   >
                     Mark On Leave
@@ -1425,6 +1453,7 @@ const StaffManagement = () => {
                   {!selected.is_active ? (
                     <button
                       onClick={() => applyStaffStatus(selected, "ACTIVE")}
+                      disabled={saving}
                       className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
                     >
                       Activate
@@ -1432,12 +1461,14 @@ const StaffManagement = () => {
                   ) : null}
                   <button
                     onClick={() => updateStaff(selected)}
+                    disabled={saving}
                     className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700"
                   >
                     Save Changes
                   </button>
                   <button
-                    onClick={() => deleteStaff(selected)}
+                    onClick={() => setDeleteTarget(selected)}
+                    disabled={saving}
                     className="rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700"
                   >
                     Delete
@@ -1448,6 +1479,18 @@ const StaffManagement = () => {
           </div>
         </div>
       ) : null}
+
+      <ConfirmActionDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !saving) setDeleteTarget(null);
+        }}
+        title="Delete Staff Member?"
+        description={`This will permanently delete ${deleteTarget?.name ?? "this staff member"} and cannot be undone.`}
+        confirmLabel="Delete Staff"
+        isLoading={saving}
+        onConfirm={deleteStaff}
+      />
 
       {createOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-purple-950/60 p-4 backdrop-blur-sm">

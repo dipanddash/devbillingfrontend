@@ -1,6 +1,8 @@
-﻿import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { Gift, History, TicketPercent } from "lucide-react";
+import { toast } from "sonner";
+import ConfirmActionDialog from "@/components/ConfirmActionDialog";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 
@@ -105,6 +107,8 @@ const Coupons = () => {
   const [products, setProducts] = useState<ProductOption[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [saving, setSaving] = useState(false);
+  const [deletingCouponId, setDeletingCouponId] = useState<number | null>(null);
+  const [confirmDeleteCouponId, setConfirmDeleteCouponId] = useState<number | null>(null);
   const [statusText, setStatusText] = useState("");
 
   const getAuthHeaders = () => {
@@ -303,8 +307,7 @@ const Coupons = () => {
   };
 
   const deleteCoupon = async (couponId: number) => {
-    const ok = window.confirm("Delete this coupon?");
-    if (!ok) return;
+    setDeletingCouponId(couponId);
     try {
       const res = await fetch(`${API_BASE}/api/orders/coupons/${couponId}/`, {
         method: "DELETE",
@@ -312,14 +315,20 @@ const Coupons = () => {
       });
       if (!res.ok) {
         setStatusText("Failed to delete coupon.");
+        toast.error("Failed to delete coupon.");
         return;
       }
       await fetchCoupons();
       if (editingId === couponId) resetForm();
       setStatusText("Coupon deleted.");
+      toast.success("Coupon deleted successfully.");
+      setConfirmDeleteCouponId(null);
     } catch (err) {
       console.error("Delete coupon failed:", err);
       setStatusText("Failed to delete coupon.");
+      toast.error("Failed to delete coupon.");
+    } finally {
+      setDeletingCouponId(null);
     }
   };
 
@@ -609,8 +618,9 @@ const Coupons = () => {
                         Edit
                       </button>
                       <button
-                        onClick={() => void deleteCoupon(coupon.id)}
-                        className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                        onClick={() => setConfirmDeleteCouponId(coupon.id)}
+                        disabled={deletingCouponId === coupon.id}
+                        className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-60"
                       >
                         Delete
                       </button>
@@ -700,6 +710,21 @@ const Coupons = () => {
           </table>
         </div>
       </section>
+
+      <ConfirmActionDialog
+        open={confirmDeleteCouponId !== null}
+        onOpenChange={(open) => {
+          if (!open && deletingCouponId === null) setConfirmDeleteCouponId(null);
+        }}
+        title="Delete Coupon?"
+        description="This action permanently removes the coupon and cannot be undone."
+        confirmLabel="Delete Coupon"
+        isLoading={deletingCouponId !== null}
+        onConfirm={async () => {
+          if (confirmDeleteCouponId === null) return;
+          await deleteCoupon(confirmDeleteCouponId);
+        }}
+      />
     </div>
   );
 };

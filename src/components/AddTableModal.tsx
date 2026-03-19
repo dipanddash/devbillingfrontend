@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
+import { toast } from "sonner";
 
 interface AddTableForm {
   number: string;
@@ -46,7 +47,7 @@ export default function AddTableModal({ open, onOpenChange, isSaving = false, de
   const handleSave = async () => {
     const trimmed = number.trim();
     if (!trimmed) {
-      window.alert('Table number is required');
+      toast.error("Table number is required.");
       return;
     }
 

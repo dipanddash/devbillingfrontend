@@ -4,6 +4,7 @@ import { TrendingUp, ShoppingBag, Users, DollarSign, type LucideIcon } from "luc
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar } from "recharts";
 import dashboardBanner from "@/assets/dashboard-banner.jpg";
 import { getOfflineOrders } from "@/offline/orders";
+import { roundRupee } from "@/lib/money";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 const TOP_DISH_PLACEHOLDER =
@@ -117,7 +118,19 @@ const pickMetricChange = (rows: JsonRecord[], names: string[], fallback = "+0%")
   );
 };
 
-const money = (value: number) => `Rs. ${value.toLocaleString()}`;
+const money = (value: number) => `Rs. ${roundRupee(value).toLocaleString("en-IN")}`;
+
+const resolveRecentOrderStatus = (rawStatus: unknown, paymentStatus: unknown) => {
+  const payment = String(paymentStatus ?? "").toUpperCase();
+  const status = String(rawStatus ?? "").toUpperCase();
+  if (payment === "PAID") return "Paid";
+  if (payment === "REFUNDED") return "Refunded";
+  if (status === "CANCELLED") return "Cancelled";
+  if (status === "READY") return "Ready";
+  if (status === "SERVED" || status === "COMPLETED") return "Served";
+  if (status === "IN_PROGRESS" || status === "COOKING") return "Cooking";
+  return "Pending";
+};
 
 const resolveImageUrl = (value: unknown) => {
   const raw = String(value ?? "").trim();
@@ -522,7 +535,7 @@ const AdminDashboard = () => {
             items: toNum(x.items_count ?? x.items),
             amount: money(toNum(x.total_amount ?? x.amount ?? x.grand_total)),
             type: pretty(String(x.order_type ?? (x.table_name ? "dine_in" : "takeaway"))),
-            status: pretty(String(x.status ?? x.payment_status ?? "Pending")),
+            status: resolveRecentOrderStatus(x.status, x.payment_status),
           }));
           const offlineMapped = pendingOfflineOrders
             .slice(0, 10)
@@ -532,7 +545,7 @@ const AdminDashboard = () => {
               items: Array.isArray(row.items) ? row.items.length : 0,
               amount: money(toNum(row.total_amount)),
               type: pretty(String(row.order_type ?? "takeaway")),
-              status: "Offline Sync Pending",
+              status: `${resolveRecentOrderStatus(row.status, row.payment_status)} (Sync Pending)`,
             }));
           const combinedRecent = [...offlineMapped, ...mapped].slice(0, 10);
           if (combinedRecent.length > 0) setRecentOrders(combinedRecent);
@@ -769,7 +782,7 @@ const AdminDashboard = () => {
                     </td>
                     <td className="py-3">
                       <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                        order.status === "Served" ? "bg-success/10 text-success" :
+                        order.status === "Paid" || order.status === "Served" ? "bg-success/10 text-success" :
                         order.status === "Ready" ? "bg-info/10 text-info" :
                         order.status === "Cooking" ? "bg-warning/10 text-warning" :
                         "bg-muted text-muted-foreground"

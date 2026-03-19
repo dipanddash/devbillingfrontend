@@ -1,15 +1,16 @@
 ﻿import StatusBadge from "@/components/StatusBadge";
 import RefreshButton from "@/components/RefreshButton";
-import { getOfflineOrders } from "@/offline/orders";
-import { cacheOrderDetail, cacheOrders, getCachedOrders } from "@/offline/cache";
+import { getOfflineOrders, saveOfflineOrder } from "@/offline/orders";
+import { cacheOrderDetail, cacheOrders, getCachedOrderDetail, getCachedOrders } from "@/offline/cache";
 import { isOnline } from "@/offline/network";
+import { formatRupees, roundRupee, toMoneyNumber } from "@/lib/money";
 import {
   AlertCircle,
   BadgeIndianRupee,
   CheckCircle2,
   FileText,
   Instagram,
-  
+  Loader2,
   ShoppingBag,
   Wallet,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { toast } from "sonner";
 
 const BASE_URL = import.meta.env.VITE_API_BASE;
 
@@ -122,21 +124,32 @@ const getLogoDataUrl = async (): Promise<string | null> => {
   }
 };
 
+const normalizeOrderVisualStatus = (
+  paymentStatus: unknown,
+  rawStatus: unknown,
+): OrderRow["status"] => {
+  const payment = String(paymentStatus ?? "").toUpperCase();
+  const status = String(rawStatus ?? "").toUpperCase();
+  if (payment === "PAID") return "paid";
+  if (payment === "REFUNDED" || status === "CANCELLED") return "cancelled";
+  if (status === "READY") return "ready";
+  if (status === "SERVED" || status === "COMPLETED") return "served";
+  if (status === "IN_PROGRESS" || status === "COOKING") return "cooking";
+  return "pending";
+};
+
+const isDbUnavailableError = (
+  status: number,
+  payload: Record<string, unknown>,
+): boolean =>
+  status === 503 || String(payload?.code ?? "").toUpperCase() === "DB_OFFLINE";
+
 const Orders = () => {
   const token = localStorage.getItem("access");
   const navigate = useNavigate();
 
-  const toBadgeStatus = (paymentStatus: unknown, rawStatus: unknown): OrderRow["status"] => {
-    const payment = String(paymentStatus ?? "").toUpperCase();
-    const status = String(rawStatus ?? "").toUpperCase();
-    if (status === "CANCELLED" || payment === "REFUNDED") return "cancelled";
-    if (payment === "PAID") return "paid";
-    if (status === "CANCELLED") return "cancelled";
-    if (status === "READY") return "ready";
-    if (status === "SERVED" || status === "COMPLETED") return "served";
-    if (status === "IN_PROGRESS" || status === "COOKING") return "cooking";
-    return "pending";
-  };
+  const toBadgeStatus = (paymentStatus: unknown, rawStatus: unknown): OrderRow["status"] =>
+    normalizeOrderVisualStatus(paymentStatus, rawStatus);
 
   const [search, setSearch] = useState("");
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -145,6 +158,7 @@ const Orders = () => {
   const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [paymentInput, setPaymentInput] = useState("");
   const [cashGiven, setCashGiven] = useState("");
+  const [paying, setPaying] = useState(false);
   const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
   const [invoiceOrderId, setInvoiceOrderId] = useState<string | null>(null);
   const [whatsAppPhone, setWhatsAppPhone] = useState("");
@@ -154,6 +168,7 @@ const Orders = () => {
     text: string;
   } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingOrders, setLoadingOrders] = useState(true);
 
   const isEditableUnpaidOrder = (order: OrderRow) => {
     const payment = String(order.paymentStatus || "").toUpperCase();
@@ -163,6 +178,7 @@ const Orders = () => {
 
   const loadOrders = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
+    else setLoadingOrders(true);
     try {
       const offlineRows = await getOfflineOrders();
       let data: Array<Record<string, unknown>> = [];
@@ -212,7 +228,7 @@ const Orders = () => {
         table: (order.table_name as string) || "TakeAway",
         customer: (order.customer_name as string) || "Walk-in",
         items: Number(order.items_count || 0),
-        total: `Rs ${order.total_amount}`,
+        total: formatRupees(order.total_amount),
         status: toBadgeStatus(order.payment_status, order.status),
         paymentStatus: String(order.payment_status ?? ""),
         time: new Date(String(order.created_at)).toLocaleTimeString([], {
@@ -248,7 +264,7 @@ const Orders = () => {
               (String(row.order_type ?? "").toUpperCase() === "DINE_IN" ? "Offline" : "Takeaway"),
             customer: mirroredServer?.customer || String(row.customer_name ?? "").trim() || "Walk-in",
             items: Array.isArray(row.items) ? row.items.length : mirroredServer?.items || 0,
-            total: `Rs ${Number(row.total_amount ?? 0).toFixed(2)}`,
+            total: formatRupees(row.total_amount ?? 0),
             status: toBadgeStatus(paymentStatus, rawStatus),
             paymentStatus,
             time: new Date(String(row.created_at ?? Date.now())).toLocaleTimeString([], {
@@ -267,6 +283,7 @@ const Orders = () => {
       console.error("Failed to load orders", err);
     } finally {
       setRefreshing(false);
+      setLoadingOrders(false);
     }
   }, [token]);
 
@@ -289,24 +306,106 @@ const Orders = () => {
     navigate(`/staff/pos?order=${encodeURIComponent(orderId)}`);
   };
 
+  const queueOfflinePaymentSync = async (orderId: string) => {
+    let detail: Record<string, unknown> | null = await getCachedOrderDetail(orderId);
+    if (!detail) {
+      try {
+        const detailRes = await fetch(`${BASE_URL}/api/orders/${orderId}/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (detailRes.ok) {
+          detail = (await detailRes.json()) as Record<string, unknown>;
+          await cacheOrderDetail(detail);
+        }
+      } catch {
+        // no-op, fallback to cached detail
+      }
+    }
+
+    const detailItems = Array.isArray(detail?.items) ? (detail?.items as Array<Record<string, unknown>>) : [];
+    const syncableItems = detailItems
+      .map((item) => {
+        const addonCounts = new Map<
+          string,
+          { id: string; name: string; price: number; qty: number }
+        >();
+        const addonRows = Array.isArray(item?.addons) ? (item.addons as Array<Record<string, unknown>>) : [];
+        addonRows.forEach((addon) => {
+          const addonId = String(addon?.addon ?? "").trim();
+          if (!addonId) return;
+          const prev = addonCounts.get(addonId) ?? {
+            id: addonId,
+            name: String(addon?.addon_name ?? "Addon"),
+            price: toMoneyNumber(addon?.price_at_time ?? 0),
+            qty: 0,
+          };
+          prev.qty += 1;
+          addonCounts.set(addonId, prev);
+        });
+
+        const row = {
+          product: item?.product ? String(item.product) : undefined,
+          combo: item?.combo ? String(item.combo) : undefined,
+          name: String(item?.product_name ?? item?.combo_name ?? "Item"),
+          quantity: Math.max(1, Number(item?.quantity ?? 1)),
+          base_price: toMoneyNumber(item?.base_price ?? item?.price_at_time ?? 0),
+          price: toMoneyNumber(item?.base_price ?? item?.price_at_time ?? 0),
+          gst_percent: toMoneyNumber(item?.gst_percent ?? 0),
+          addons: Array.from(addonCounts.values()),
+        };
+        if (!row.product && !row.combo) return null;
+        return row;
+      })
+      .filter(Boolean) as Array<{
+      product?: string;
+      combo?: string;
+      name: string;
+      quantity: number;
+      base_price: number;
+      price: number;
+      gst_percent: number;
+      addons: Array<{ id: string; name: string; price: number; qty: number }>;
+    }>;
+
+    if (syncableItems.length === 0) {
+      throw new Error("Order details are not available locally. Open this order in POS once, then retry.");
+    }
+
+    const selected = orders.find((o) => o.id === orderId);
+    await saveOfflineOrder({
+      order_type: String(detail?.order_type ?? "TAKEAWAY"),
+      customer_name: String(detail?.customer_name ?? selected?.customer ?? "Walk-in"),
+      customer_phone: String(detail?.customer_phone ?? detail?.phone ?? ""),
+      items: syncableItems,
+      discount_amount: toMoneyNumber(detail?.discount_amount ?? 0),
+      payment_method: paymentMethod,
+      payment_reference: paymentMethod === "CARD" ? paymentInput.trim() : "",
+      cash_received: paymentMethod === "CASH" ? roundRupee(cashGiven || 0) : 0,
+      status: String(detail?.status ?? "NEW"),
+      payment_status: "PAID",
+      server_order_id: orderId,
+    });
+  };
+
   const confirmPayment = async () => {
-    if (!selectedOrder) return;
+    if (!selectedOrder || paying) return;
 
     const selected = orders.find((o) => o.id === selectedOrder);
-    const payable = Number(String(selected?.total || 0).replace(/[^0-9.]/g, ""));
+    const payable = roundRupee(selected?.total || 0);
     if (paymentMethod === "CARD" && !paymentInput.trim()) {
-      alert("Card number/reference is required.");
+      toast.error("Card number/reference is required.");
       return;
     }
     if (paymentMethod === "CASH") {
-      const cashVal = Number(cashGiven || 0);
+      const cashVal = roundRupee(cashGiven || 0);
       if (!Number.isFinite(cashVal) || cashVal < payable) {
-        alert("Cash given should be at least bill amount.");
+        toast.error("Cash given should be at least bill amount.");
         return;
       }
     }
 
     try {
+      setPaying(true);
       const res = await fetch(`${BASE_URL}/api/orders/pay/${selectedOrder}/`, {
         method: "POST",
         headers: {
@@ -316,34 +415,107 @@ const Orders = () => {
         body: JSON.stringify({
           method: paymentMethod,
           reference: paymentMethod === "CARD" ? paymentInput.trim() || null : null,
-          cash_received: paymentMethod === "CASH" ? cashGiven || null : null,
+          cash_received: paymentMethod === "CASH" ? roundRupee(cashGiven || 0) : null,
         }),
       });
 
       if (res.ok) {
         closeModal();
+        toast.success("Payment completed successfully.");
 
         setOrders((prev) =>
-          prev.map((o) => (o.id === selectedOrder ? { ...o, status: "paid" } : o))
+          prev.map((o) =>
+            o.id === selectedOrder
+              ? { ...o, status: "paid", paymentStatus: "PAID", syncStatus: o.syncStatus ?? "synced" }
+              : o
+          )
         );
 
-        loadOrders();
+        void loadOrders();
       } else {
         const raw = await res.text().catch(() => "");
-        let err: any = {};
+        let err: Record<string, unknown> = {};
         try {
-          err = raw ? JSON.parse(raw) : {};
+          err = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
         } catch {
-          err = { raw };
+          err = { raw } as Record<string, unknown>;
         }
+
+        const messageText = String(
+          err?.detail ?? err?.error ?? err?.message ?? err?.raw ?? ""
+        ).toLowerCase();
+        const code = String(err?.code ?? "").toUpperCase();
+        if (res.status === 400 && (messageText.includes("already paid") || code === "ORDER_LOCKED")) {
+          closeModal();
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.id === selectedOrder
+                ? { ...o, status: "paid", paymentStatus: "PAID", syncStatus: o.syncStatus ?? "synced" }
+                : o
+            )
+          );
+          toast.success("Order is already marked paid.");
+          void loadOrders();
+          return;
+        }
+
+        if (isDbUnavailableError(res.status, err)) {
+          await queueOfflinePaymentSync(selectedOrder);
+          closeModal();
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.id === selectedOrder
+                ? { ...o, status: "paid", paymentStatus: "PAID", syncStatus: "pending", source: "offline" }
+                : o
+            )
+          );
+          toast.warning("Server database is unavailable. Payment saved locally and will sync automatically.");
+          void loadOrders();
+          return;
+        }
+        if (!isOnline() && res.status === 404) {
+          await queueOfflinePaymentSync(selectedOrder);
+          closeModal();
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.id === selectedOrder
+                ? { ...o, status: "paid", paymentStatus: "PAID", syncStatus: "pending", source: "offline" }
+                : o
+            )
+          );
+          toast.warning("Working offline. Payment saved locally and will sync when server is reachable.");
+          void loadOrders();
+          return;
+        }
+
         const msg =
-          (Array.isArray(err) && err.length > 0 ? String(err[0]) : "") ||
           (Array.isArray(err?.detail) && err.detail.length > 0 ? String(err.detail[0]) : "") ||
           String(err?.detail ?? err?.error ?? err?.message ?? err?.raw ?? "Payment failed");
-        alert(msg);
+        toast.error(msg);
       }
     } catch (err) {
       console.error("Payment error", err);
+      try {
+        if (selectedOrder) {
+          await queueOfflinePaymentSync(selectedOrder);
+          closeModal();
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.id === selectedOrder
+                ? { ...o, status: "paid", paymentStatus: "PAID", syncStatus: "pending", source: "offline" }
+                : o
+            )
+          );
+          toast.warning("Network dropped. Payment saved locally and will sync when connection returns.");
+          void loadOrders();
+          return;
+        }
+      } catch {
+        // no-op, fallback to generic error toast below
+      }
+      toast.error("Unable to process payment right now.");
+    } finally {
+      setPaying(false);
     }
   };
 
@@ -375,7 +547,7 @@ const Orders = () => {
             (invoice as Record<string, unknown>)?.detail ??
             "Invoice not available for this order yet."
         );
-        alert(msg);
+        toast.error(msg);
         return;
       }
       const detail = detailRes.ok ? await detailRes.json() : {};
@@ -387,7 +559,7 @@ const Orders = () => {
       setWhatsAppStatus(null);
     } catch (err) {
       console.error("Invoice load failed", err);
-      alert("Failed to load invoice details.");
+      toast.error("Failed to load invoice details.");
     }
   };
 
@@ -414,7 +586,7 @@ const Orders = () => {
       variables: [
         invoiceData.customer_name || "Customer",
         invoiceData.bill_number || "-",
-        Number(invoiceData.final_amount || 0).toFixed(2),
+        String(roundRupee(invoiceData.final_amount || 0)),
         invoiceData.payment_method || "-",
         new Date(invoiceData.date).toLocaleDateString("en-GB"),
       ],
@@ -479,16 +651,16 @@ const Orders = () => {
           const baseRow = [[
             item.name,
             String(item.quantity),
-            Number(item.base_price || 0).toFixed(2),
+            Number(item.base_price || 0).toFixed(0),
             "-",
-            Number(item.line_total || 0).toFixed(2),
+            Number(item.line_total || 0).toFixed(0),
           ]];
           const addonRows = (item.addons || []).map((addon) => [
-            `  + ${addon.name} x${Number(addon.quantity_per_item ?? addon.quantity_total ?? 0)} @ ${Number(addon.unit_price || 0).toFixed(2)}`,
+            `  + ${addon.name} x${Number(addon.quantity_per_item ?? addon.quantity_total ?? 0)} @ ${Number(addon.unit_price || 0).toFixed(0)}`,
             "",
             "",
             "",
-            Number(addon.line_total || 0).toFixed(2),
+            Number(addon.line_total || 0).toFixed(0),
           ]);
           return [...baseRow, ...addonRows];
         })
@@ -496,16 +668,16 @@ const Orders = () => {
           const baseRow = [[
             item.name,
             String(item.quantity),
-            Number(item.base_price || 0).toFixed(2),
-            Number(item.gst_percent || 0).toFixed(2),
-            Number(item.line_total || 0).toFixed(2),
+            Number(item.base_price || 0).toFixed(0),
+            Number(item.gst_percent || 0).toFixed(0),
+            Number(item.line_total || 0).toFixed(0),
           ]];
           const addonRows = (item.addons || []).map((addon) => [
-            `  + ${addon.name} x${Number(addon.quantity_per_item ?? addon.quantity_total ?? 0)} @ ${Number(addon.unit_price || 0).toFixed(2)}`,
+            `  + ${addon.name} x${Number(addon.quantity_per_item ?? addon.quantity_total ?? 0)} @ ${Number(addon.unit_price || 0).toFixed(0)}`,
             "",
             "",
             "",
-            Number(addon.line_total || 0).toFixed(2),
+            Number(addon.line_total || 0).toFixed(0),
           ]);
           return [...baseRow, ...addonRows];
         })) as string[][];
@@ -732,6 +904,12 @@ const Orders = () => {
               <div className="mt-2">
                 <RefreshButton onClick={() => loadOrders(true)} loading={refreshing} />
               </div>
+              {(loadingOrders || refreshing) && (
+                <p className="mt-2 inline-flex items-center gap-2 text-xs font-medium text-purple-700/80">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Loading orders...
+                </p>
+              )}
             </div>
 
             <div className="relative w-full max-w-sm">
@@ -803,78 +981,95 @@ const Orders = () => {
               </thead>
 
               <tbody className="divide-y divide-purple-100">
-                {filtered.map((o) => (
-                  <tr
-                    key={o.id}
-                    className="transition hover:bg-purple-50/60"
-                  >
-                    <td className="px-6 py-4 text-sm font-semibold text-purple-900">
-                      #{o.orderRef}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-purple-800">{o.table}</td>
-                    <td className="px-6 py-4 text-sm text-purple-900">{o.customer}</td>
-                    <td className="px-6 py-4 text-sm text-purple-700/80">{o.items}</td>
-                    <td className="px-6 py-4 text-sm font-semibold text-purple-900">
-                      {o.total}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <StatusBadge
-                          variant={o.status}
-                          label={
-                            o.status === "cancelled" && o.paymentStatus.toUpperCase() === "REFUNDED"
-                              ? "Refunded"
-                              : undefined
-                          }
-                        />
-
-                        {o.status === "paid" ? (
-                          <>
-                            <button
-                              onClick={() => openInvoiceModal(o.id)}
-                              className="inline-flex items-center gap-1 rounded-lg border border-purple-200 bg-purple-100 px-3 py-1.5 text-xs font-semibold text-purple-700 transition hover:bg-purple-200"
-                            >
-                              <FileText className="h-3.5 w-3.5" />
-                              Invoice
-                            </button>
-                          </>
-                        ) : o.source === "offline" ? (
-                          <>
-                            {isEditableUnpaidOrder(o) && (
-                              <button
-                                onClick={() => openOrderInPos(o.serverId || o.id)}
-                                className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-50"
-                              >
-                                Edit
-                              </button>
-                            )}
-                            <span className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
-                              Offline Sync Pending
-                            </span>
-                          </>
-                        ) : o.status !== "cancelled" ? (
-                          <>
-                            {isEditableUnpaidOrder(o) && (
-                              <button
-                                onClick={() => openOrderInPos(o.id)}
-                                className="rounded-lg border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-700 transition hover:bg-purple-50"
-                              >
-                                Edit
-                              </button>
-                            )}
-                            <button
-                              onClick={() => openPaymentModal(o.id)}
-                              className="rounded-lg bg-[linear-gradient(135deg,#7c3aed_0%,#5b21b6_100%)] px-3 py-1.5 text-xs font-semibold text-white shadow-[0_8px_18px_rgba(91,33,182,0.28)] transition hover:opacity-95"
-                            >
-                              Pay Now
-                            </button>
-                          </>
-                        ) : null}
+                {loadingOrders ? (
+                  <tr>
+                    <td colSpan={7} className="px-6 py-10">
+                      <div className="flex items-center justify-center gap-2 text-sm text-purple-700/80">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Fetching latest orders...
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-sm text-purple-700/80">{o.time}</td>
                   </tr>
-                ))}
+                ) : filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-6 py-10 text-center text-sm text-purple-700/80">
+                      No orders found.
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map((o) => (
+                    <tr
+                      key={o.id}
+                      className="transition hover:bg-purple-50/60"
+                    >
+                      <td className="px-6 py-4 text-sm font-semibold text-purple-900">
+                        #{o.orderRef}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-purple-800">{o.table}</td>
+                      <td className="px-6 py-4 text-sm text-purple-900">{o.customer}</td>
+                      <td className="px-6 py-4 text-sm text-purple-700/80">{o.items}</td>
+                      <td className="px-6 py-4 text-sm font-semibold text-purple-900">
+                        {o.total}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <StatusBadge
+                            variant={o.status}
+                            label={
+                              o.status === "cancelled" && o.paymentStatus.toUpperCase() === "REFUNDED"
+                                ? "Refunded"
+                                : undefined
+                            }
+                          />
+
+                          {o.status === "paid" ? (
+                            <>
+                              <button
+                                onClick={() => openInvoiceModal(o.id)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-purple-200 bg-purple-100 px-3 py-1.5 text-xs font-semibold text-purple-700 transition hover:bg-purple-200"
+                              >
+                                <FileText className="h-3.5 w-3.5" />
+                                Invoice
+                              </button>
+                            </>
+                          ) : o.source === "offline" ? (
+                            <>
+                              {isEditableUnpaidOrder(o) && (
+                                <button
+                                  onClick={() => openOrderInPos(o.serverId || o.id)}
+                                  className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-50"
+                                >
+                                  Edit
+                                </button>
+                              )}
+                              <span className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
+                                Offline Sync Pending
+                              </span>
+                            </>
+                          ) : o.status !== "cancelled" ? (
+                            <>
+                              {isEditableUnpaidOrder(o) && (
+                                <button
+                                  onClick={() => openOrderInPos(o.id)}
+                                  className="rounded-lg border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-700 transition hover:bg-purple-50"
+                                >
+                                  Edit
+                                </button>
+                              )}
+                              <button
+                                onClick={() => openPaymentModal(o.id)}
+                                className="rounded-lg bg-[linear-gradient(135deg,#7c3aed_0%,#5b21b6_100%)] px-3 py-1.5 text-xs font-semibold text-white shadow-[0_8px_18px_rgba(91,33,182,0.28)] transition hover:opacity-95"
+                              >
+                                Pay Now
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-purple-700/80">{o.time}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -949,9 +1144,9 @@ const Orders = () => {
                           {(li.addons || []).map((addon, addonIdx) => (
                             <div key={`${li.name}-${idx}-addon-${addonIdx}`} className="grid grid-cols-12 gap-2 text-[9px] text-slate-600">
                               <p className="col-span-8 pl-2">
-                                + {addon.name} x{Number(addon.quantity_per_item ?? addon.quantity_total ?? 0)} / item @ Rs {Number(addon.unit_price || 0).toFixed(2)}
+                                + {addon.name} x{Number(addon.quantity_per_item ?? addon.quantity_total ?? 0)} / item @ Rs {Number(addon.unit_price || 0).toFixed(0)}
                               </p>
-                              <p className="col-span-4 text-right">Rs {Number(addon.line_total || 0).toFixed(2)}</p>
+                              <p className="col-span-4 text-right">Rs {Number(addon.line_total || 0).toFixed(0)}</p>
                             </div>
                           ))}
                         </div>
@@ -1100,10 +1295,10 @@ const Orders = () => {
                   <p className="text-xs text-purple-700/80">
                     Balance: Rs {(() => {
                       const selected = orders.find((o) => o.id === selectedOrder);
-                      const payable = Number(String(selected?.total || 0).replace(/[^0-9.]/g, ""));
-                      const given = Number(cashGiven || 0);
-                      const balance = (Number.isFinite(given) ? given : 0) - (Number.isFinite(payable) ? payable : 0);
-                      return balance.toFixed(2);
+                      const payable = roundRupee(selected?.total || 0);
+                      const given = roundRupee(cashGiven || 0);
+                      const balance = given - payable;
+                      return roundRupee(balance);
                     })()}
                   </p>
                 </>
@@ -1124,15 +1319,17 @@ const Orders = () => {
               <button
                 type="button"
                 onClick={closeModal}
+                disabled={paying}
                 className="rounded-xl border border-purple-200 px-4 py-2 text-sm font-medium text-purple-700 transition hover:bg-purple-50"
               >
                 Cancel
               </button>
               <button
                 type="submit"
+                disabled={paying}
                 className="rounded-xl bg-[linear-gradient(135deg,#7c3aed_0%,#5b21b6_100%)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-95"
               >
-                Confirm Payment
+                {paying ? "Processing..." : "Confirm Payment"}
               </button>
             </div>
           </form>

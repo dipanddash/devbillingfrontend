@@ -9,6 +9,7 @@ export interface OfflineOrderItem {
   product?: string;
   combo?: string;
   name: string;
+  base_price?: number;
   quantity: number;
   price: number;
   gst_percent: number;
@@ -63,19 +64,25 @@ export async function saveOfflineOrder(
   const paymentMethod =
     paymentStatus === "PAID" ? String(payload.payment_method || "CASH").toUpperCase() : "";
 
-  // Calculate total
+  // Calculate total (match POS computation: subtotal + GST - discount).
   let total = 0;
   for (const item of payload.items) {
-    total += item.price * item.quantity;
-    if (item.addons) {
-      for (const addon of item.addons) {
-        total += addon.price * addon.qty * item.quantity;
-      }
-    }
+    const qty = Math.max(1, Number(item.quantity || 1));
+    const subtotalUnit = Number(item.price || 0);
+    const addonUnitTotal = Array.isArray(item.addons)
+      ? item.addons.reduce((sum, addon) => sum + Number(addon.price || 0) * Math.max(1, Number(addon.qty || 1)), 0)
+      : 0;
+    const taxableBaseUnit =
+      item.base_price != null
+        ? Number(item.base_price || 0)
+        : Math.max(0, subtotalUnit - addonUnitTotal);
+    const gstPercent = Number(item.gst_percent || 0);
+    const gstUnit = taxableBaseUnit * gstPercent / 100;
+    total += (subtotalUnit + gstUnit) * qty;
   }
 
-  const discount = payload.discount_amount || 0;
-  const finalTotal = Math.max(total - discount, 0);
+  const discount = Math.max(0, Math.round(payload.discount_amount || 0));
+  const finalTotal = Math.max(Math.round(total - discount), 0);
 
   // Build sync payload (what the server expects)
   const syncItems = payload.items.map((item) => ({

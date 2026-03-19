@@ -8,10 +8,11 @@
  * - Idempotent (server checks client_id to prevent duplicates)
  * - Caches fresh data from server on reconnect
  */
-import { isOnline, onConnectivityChange } from "./network";
+import { forceOfflineMode, isOnline, onConnectivityChange } from "./network";
 import { getPendingItems, getPendingSyncCount, markSyncing, markSynced, markFailed, markPermanentlyFailed, cleanupSyncedItems, type SyncQueueItem } from "./queue";
 import { markOrderSynced } from "./orders";
 import { cacheSnapshot } from "./cache";
+import { withRequestMeta } from "@/lib/requestMeta";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 const SYNC_INTERVAL = 30_000;  // 30 seconds between sync attempts
@@ -56,12 +57,21 @@ async function pushToServer(items: SyncQueueItem[]): Promise<void> {
   }));
 
   const res = await fetch(`${API_BASE}/api/sync/push/`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ operations }),
+    ...withRequestMeta(
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ operations }),
+      },
+      {
+        showLoader: false,
+        loaderType: "silent",
+        requestPurpose: "sync",
+      },
+    ),
   });
 
   if (!res.ok) {
@@ -111,7 +121,14 @@ async function refreshCache(): Promise<void> {
 
   try {
     const res = await fetch(`${API_BASE}/api/sync/snapshot/`, {
-      headers: { Authorization: `Bearer ${token}` },
+      ...withRequestMeta(
+        { headers: { Authorization: `Bearer ${token}` } },
+        {
+          showLoader: false,
+          loaderType: "silent",
+          requestPurpose: "sync",
+        },
+      ),
     });
     if (res.ok) {
       const snapshot = await res.json();
@@ -127,12 +144,21 @@ async function triggerServerOfflineSync(): Promise<void> {
   if (!token || !isOnline()) return;
 
   const res = await fetch(`${API_BASE}/api/sync/trigger/`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ batch_size: 50, max_batches: 10 }),
+    ...withRequestMeta(
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ batch_size: 50, max_batches: 10 }),
+      },
+      {
+        showLoader: false,
+        loaderType: "silent",
+        requestPurpose: "sync",
+      },
+    ),
   });
 
   if (!res.ok) {
@@ -180,6 +206,7 @@ async function runSyncCycle(): Promise<void> {
     await refreshCache();
   } catch (err) {
     console.error("[Sync] Cycle error:", err);
+    forceOfflineMode();
   } finally {
     _isSyncing = false;
   }
@@ -215,6 +242,7 @@ export function stopSyncWorker(): void {
 
 /** Force an immediate sync attempt. */
 export async function forceSyncNow(): Promise<void> {
+  if (!isOnline()) return;
   await runSyncCycle();
   await triggerServerOfflineSync();
   await refreshCache();

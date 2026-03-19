@@ -2,6 +2,7 @@
 import { useAuth } from "@/contexts/AuthContext";
 import { handleEnterPrimaryAction } from "@/lib/enterAction";
 import { createAuthFetch } from "@/lib/authFetch";
+import { shouldTrackGlobalLoader } from "@/lib/requestMeta";
 import { LogOut, ChevronDown, User, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
   
@@ -30,21 +31,13 @@ const StaffLayout = () => {
   const [showApiLoader, setShowApiLoader] = useState(false);
   const activeRequestsRef = useRef(0);
   const loaderTimerRef = useRef<number | null>(null);
+  const newOrderMenuRef = useRef<HTMLDivElement | null>(null);
   const displayName = user?.name || user?.username || user?.email || "Staff User";
   const isKitchenRoute = location.pathname.startsWith("/staff/kitchen");
 
   useEffect(() => {
     const originalFetch = window.fetch.bind(window);
     const LOADER_DELAY_MS = 450;
-
-    const getRequestUrl = (input: RequestInfo | URL) => {
-      if (typeof input === "string") return input;
-      if (input instanceof Request) return input.url;
-      return String(input);
-    };
-
-    const shouldTrackRequest = (url: string) =>
-      url.includes("/api/") && !window.location.pathname.startsWith("/staff/kitchen");
 
     const handleUnauthorized = () => {
       logout();
@@ -57,8 +50,9 @@ const StaffLayout = () => {
     });
 
     window.fetch = async (...args: Parameters<typeof fetch>) => {
-      const requestUrl = getRequestUrl(args[0]);
-      const trackThisRequest = shouldTrackRequest(requestUrl);
+      const trackThisRequest =
+        shouldTrackGlobalLoader(args[0], args[1], import.meta.env.VITE_API_BASE) &&
+        !window.location.pathname.startsWith("/staff/kitchen");
 
       if (trackThisRequest) {
         activeRequestsRef.current += 1;
@@ -120,6 +114,29 @@ const StaffLayout = () => {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [newOrderOpen]);
 
+  useEffect(() => {
+    if (!newOrderOpen) return;
+
+    const onPointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (newOrderMenuRef.current && !newOrderMenuRef.current.contains(target)) {
+        setNewOrderOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+    };
+  }, [newOrderOpen]);
+
+  useEffect(() => {
+    setNewOrderOpen(false);
+  }, [location.pathname]);
+
   const handleLogout = async () => {
   const token = localStorage.getItem("access");
 
@@ -168,7 +185,7 @@ const StaffLayout = () => {
 
             {/* CENTER NAVIGATION */}
             <div className="flex items-center gap-1">
-              <div className="relative">
+              <div ref={newOrderMenuRef} className="relative">
                 <button
                   onClick={() => setNewOrderOpen((prev) => !prev)}
                   className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-sm font-medium transition-all duration-300 ${

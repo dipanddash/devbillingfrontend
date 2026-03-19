@@ -2,6 +2,7 @@
 import { useAuth } from "@/contexts/AuthContext";
 import { handleEnterPrimaryAction } from "@/lib/enterAction";
 import { createAuthFetch } from "@/lib/authFetch";
+import { shouldTrackGlobalLoader } from "@/lib/requestMeta";
 import { LogOut, ChevronDown, User, ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -13,8 +14,8 @@ interface NavItem {
 const adminNav: NavItem[] = [
   { label: "Dashboard", path: "/admin" },
   { label: "Sales Statistics", path: "/admin/invoices" },
-  { label: "Ingredients Entry", path: "/admin/inventory" },
   { label: "Item Entry", path: "/admin/products" },
+  { label: "Ingredients Entry", path: "/admin/inventory" },
   { label: "Offers", path: "/admin/coupons" },
   { label: "Customers Data", path: "/admin/customers" },
   { label: "Suppliers", path: "/admin/vendors" },
@@ -55,19 +56,6 @@ const AdminLayout = () => {
     const LOADER_DELAY_MS = 450;
     const API_ORIGIN = import.meta.env.VITE_API_BASE;
 
-    const getRequestUrl = (input: RequestInfo | URL) => {
-      if (typeof input === "string") return input;
-      if (input instanceof Request) return input.url;
-      return String(input);
-    };
-
-    const shouldTrackRequest = (url: string) => {
-      if (!url) return false;
-      if (url.includes("/api/")) return true;
-      // Track backend calls even when endpoint path does not include "/api/".
-      return url.startsWith(API_ORIGIN);
-    };
-
     const handleUnauthorized = () => {
       logout();
       navigate("/");
@@ -79,8 +67,7 @@ const AdminLayout = () => {
     });
 
     window.fetch = async (...args: Parameters<typeof fetch>) => {
-      const requestUrl = getRequestUrl(args[0]);
-      const trackThisRequest = shouldTrackRequest(requestUrl);
+      const trackThisRequest = shouldTrackGlobalLoader(args[0], args[1], API_ORIGIN);
 
       if (trackThisRequest) {
         activeRequestsRef.current += 1;

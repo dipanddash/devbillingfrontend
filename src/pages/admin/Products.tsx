@@ -1,200 +1,55 @@
-﻿import { useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
-import {
-  BookOpen,
-  Edit2,
-  Layers,
-  Plus,
-  
-  Trash2,
-  Zap,
-} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-
-import FormModal from "./FormModal";
+import AddonFormModal from "./components/products/AddonFormModal";
+import CatalogGrid from "./components/products/CatalogGrid";
+import CategoryFormModal from "./components/products/CategoryFormModal";
+import CategorySidebar from "./components/products/CategorySidebar";
+import ComboFormModal from "./components/products/ComboFormModal";
+import ConfirmDeleteModal from "./components/products/ConfirmDeleteModal";
+import ProductFormModal from "./components/products/ProductFormModal";
+import ProductsHeader from "./components/products/ProductsHeader";
+import RecipeFormModal from "./components/products/RecipeFormModal";
+import {
+  CATALOG_ADDONS,
+  CATALOG_PRODUCTS,
+  COMBO_CATEGORY_NAME,
+  initialAddonForm,
+  initialCategoryForm,
+  initialComboForm,
+  initialProductForm,
+  placeholderCategoryImage,
+} from "./components/products/constants";
+import type {
+  Addon,
+  AddonForm,
+  ApiRecord,
+  Category,
+  CategoryForm,
+  Combo,
+  ComboForm,
+  ComboFormItem,
+  IngredientCategoryOption,
+  IngredientOption,
+  Product,
+  ProductForm,
+  Recipe,
+} from "./components/products/types";
+import { convertToBaseUnit, getCompatibleUnits } from "./components/products/unit-utils";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
-
-interface Product {
-  id: string;
-  name: string;
-  category_name: string;
-  category_id: string;
-  price: number;
-  gst_percent: number;
-  image_url: string;
-  is_active: boolean;
-}
-
-interface Category {
-  id: string;
-  name: string;
-  image_url?: string;
-  image?: string;
-}
-
-interface ProductForm {
-  name: string;
-  categoryId: string;
-  price: string;
-  gstPercent: string;
-  image: File | null;
-  isActive: boolean;
-}
-
-interface Addon {
-  id: string;
-  name: string;
-  price: number;
-  image_url: string;
-}
-
-interface AddonForm {
-  name: string;
-  price: string;
-  image: File | null;
-}
-
-interface CategoryForm {
-  name: string;
-  image: File | null;
-}
-
-interface Recipe {
-  id: number;
-  ingredient_name: string;
-  product_name?: string;
-  product: string;
-  ingredient: string;
-  quantity: string;
-}
-
-interface IngredientOption {
-  id: string;
-  name: string;
-  unit: string;
-}
-
-interface ComboItem {
-  id: string;
-  combo: string;
-  combo_name?: string;
-  product: string;
-  product_name: string;
-  quantity: number;
-}
-
-interface Combo {
-  id: string;
-  name: string;
-  price: number;
-  gst_percent: number;
-  image_url: string;
-  is_active: boolean;
-  items: ComboItem[];
-}
-
-interface ComboFormItem {
-  productId: string;
-  quantity: string;
-}
-
-interface ComboForm {
-  name: string;
-  price: string;
-  gstPercent: string;
-  isActive: boolean;
-  image: File | null;
-  imageUrl?: string;
-  items: ComboFormItem[];
-}
-
-type ApiRecord = Record<string, unknown>;
-const COMBO_CATEGORY_NAME = "Combo";
-const CATALOG_PRODUCTS = "products";
-const CATALOG_ADDONS = "addons";
-
-const UNIT_FAMILIES: Record<string, Record<string, number>> = {
-  weight: {
-    mg: 0.001,
-    g: 1,
-    kg: 1000,
-    oz: 28.3495,
-    lb: 453.592,
-    ton: 1000000,
-  },
-  volume: {
-    ml: 1,
-    cl: 10,
-    L: 1000,
-    gal: 3785.41,
-  },
-};
-
-const findUnitFamily = (unit: string) => {
-  return Object.values(UNIT_FAMILIES).find((family) => unit in family) ?? null;
-};
-
-const getCompatibleUnits = (baseUnit: string) => {
-  const family = findUnitFamily(baseUnit);
-  if (!family) return [baseUnit];
-  return Object.keys(family);
-};
-
-const convertToBaseUnit = (value: number, fromUnit: string, baseUnit: string) => {
-  if (fromUnit === baseUnit) return value;
-  const fromFamily = findUnitFamily(fromUnit);
-  const baseFamily = findUnitFamily(baseUnit);
-  if (!fromFamily || !baseFamily || fromFamily !== baseFamily) return value;
-
-  const fromFactor = fromFamily[fromUnit];
-  const baseFactor = baseFamily[baseUnit];
-  if (!fromFactor || !baseFactor) return value;
-
-  return (value * fromFactor) / baseFactor;
-};
-
-const initialProductForm: ProductForm = {
-  name: "",
-  categoryId: "",
-  price: "",
-  gstPercent: "",
-  image: null,
-  isActive: true,
-};
-
-const initialCategoryForm: CategoryForm = {
-  name: "",
-  image: null,
-};
-
-const initialAddonForm: AddonForm = {
-  name: "",
-  price: "",
-  image: null,
-};
-
-const initialComboForm: ComboForm = {
-  name: "",
-  price: "",
-  gstPercent: "0",
-  isActive: true,
-  image: null,
-  imageUrl: "",
-  items: [{ productId: "", quantity: "1" }],
-};
-
-const placeholderCategoryImage =
-  "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=200&q=80";
+const UNCATEGORIZED_INGREDIENT_ID = "uncategorized";
 
 const AdminProducts = () => {
   const [search, setSearch] = useState("");
-  const [catalogMode, setCatalogMode] = useState(CATALOG_PRODUCTS);
+  const [catalogMode, setCatalogMode] = useState<"products" | "addons">(CATALOG_PRODUCTS);
   const [activeCategory, setActiveCategory] = useState("All");
 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [addons, setAddons] = useState<Addon[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [addonsLoading, setAddonsLoading] = useState(true);
   const [combos, setCombos] = useState<Combo[]>([]);
   const [comboLoading, setComboLoading] = useState(false);
   const [showComboModal, setShowComboModal] = useState(false);
@@ -228,8 +83,10 @@ const AdminProducts = () => {
   const [recipeLoading, setRecipeLoading] = useState(false);
   const [recipeSaving, setRecipeSaving] = useState(false);
   const [newRecipeIngredient, setNewRecipeIngredient] = useState("");
+  const [newRecipeCategoryId, setNewRecipeCategoryId] = useState("");
   const [newRecipeQuantity, setNewRecipeQuantity] = useState("");
   const [newRecipeInputUnit, setNewRecipeInputUnit] = useState("");
+  const [addonCategoryId, setAddonCategoryId] = useState("");
   const [addonIngredientId, setAddonIngredientId] = useState("");
   const [showRecipeSubmitConfirm, setShowRecipeSubmitConfirm] = useState(false);
 
@@ -247,12 +104,16 @@ const AdminProducts = () => {
   }, []);
 
   const fetchProducts = async () => {
+    setProductsLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/products/products/`, {
         headers: getAuthHeaders(),
       });
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        setProducts([]);
+        return;
+      }
 
       const data = await res.json();
       const list: ApiRecord[] = Array.isArray(data) ? data : [];
@@ -276,16 +137,23 @@ const AdminProducts = () => {
       setProducts(formatted);
     } catch (err) {
       console.error("Fetch products error:", err);
+      setProducts([]);
+    } finally {
+      setProductsLoading(false);
     }
   };
 
   const fetchCategories = async () => {
+    setCategoriesLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/products/categories/`, {
         headers: getAuthHeaders(),
       });
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        setCategories([]);
+        return;
+      }
 
       const data = await res.json();
       const list: ApiRecord[] = Array.isArray(data) ? data : [];
@@ -302,10 +170,14 @@ const AdminProducts = () => {
       ]);
     } catch (err) {
       console.error("Fetch categories error:", err);
+      setCategories([]);
+    } finally {
+      setCategoriesLoading(false);
     }
   };
 
   const fetchAddons = async () => {
+    setAddonsLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/products/addons/`, {
         headers: getAuthHeaders(),
@@ -324,11 +196,23 @@ const AdminProducts = () => {
         name: String(item.name ?? ""),
         price: Number(item.price ?? 0),
         image_url: String(item.image_url ?? item.image ?? ""),
+        ingredient_id: item.ingredient_id ? String(item.ingredient_id) : null,
+        ingredient_name: item.ingredient_name ? String(item.ingredient_name) : "",
+        ingredient_unit: item.ingredient_unit ? String(item.ingredient_unit) : "",
+        ingredient_category_id: item.ingredient_category_id
+          ? String(item.ingredient_category_id)
+          : "",
+        ingredient_category_name: item.ingredient_category_name
+          ? String(item.ingredient_category_name)
+          : "",
+        ingredient_quantity: Number(item.ingredient_quantity ?? 0),
       }));
       setAddons(mapped);
     } catch (err) {
       console.error("Fetch addons error:", err);
       setAddons([]);
+    } finally {
+      setAddonsLoading(false);
     }
   };
 
@@ -341,11 +225,22 @@ const AdminProducts = () => {
       const data = await res.json();
       const list: ApiRecord[] =
         Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
-      const mapped: IngredientOption[] = list.map((item) => ({
-        id: String(item.id),
-        name: String(item.name ?? item.ingredient_name ?? item.id),
-        unit: String(item.unit ?? "unit"),
-      }));
+      const mapped: IngredientOption[] = list.map((item) => {
+        const category = item.category as ApiRecord | undefined;
+        const categoryIdRaw = item.category_id ?? category?.id ?? item.category;
+        const categoryNameRaw = item.category_name ?? category?.name ?? "OTHERS";
+        const categoryId =
+          typeof categoryIdRaw === "string" || typeof categoryIdRaw === "number"
+            ? String(categoryIdRaw)
+            : UNCATEGORIZED_INGREDIENT_ID;
+        return {
+          id: String(item.id),
+          name: String(item.name ?? item.ingredient_name ?? item.id),
+          unit: String(item.unit ?? "unit"),
+          category_id: categoryId,
+          category_name: String(categoryNameRaw || "OTHERS"),
+        };
+      });
       setIngredients(mapped);
     } catch (err) {
       console.error("Fetch ingredients error:", err);
@@ -451,6 +346,45 @@ const AdminProducts = () => {
     [categories, productForm.categoryId]
   );
 
+  const recipeIngredientCategories = useMemo<IngredientCategoryOption[]>(() => {
+    const seen = new Map<string, string>();
+    ingredients.forEach((item) => {
+      if (!seen.has(item.category_id)) {
+        seen.set(item.category_id, item.category_name || "OTHERS");
+      }
+    });
+    return Array.from(seen.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [ingredients]);
+
+  const filteredRecipeIngredients = useMemo(
+    () =>
+      ingredients.filter(
+        (item) => newRecipeCategoryId && item.category_id === newRecipeCategoryId
+      ),
+    [ingredients, newRecipeCategoryId]
+  );
+
+  const filteredAddonIngredients = useMemo(
+    () =>
+      ingredients.filter(
+        (item) => addonCategoryId && item.category_id === addonCategoryId
+      ),
+    [ingredients, addonCategoryId]
+  );
+
+  const selectedAddonIngredient = useMemo(
+    () => ingredients.find((item) => item.id === addonIngredientId) ?? null,
+    [ingredients, addonIngredientId]
+  );
+
+  const addonUnitOptions = useMemo(() => {
+    const baseUnit = selectedAddonIngredient?.unit || "";
+    if (!baseUnit) return [];
+    return getCompatibleUnits(baseUnit);
+  }, [selectedAddonIngredient]);
+
   const ingredientUnitById = useMemo(() => {
     const unitMap: Record<string, string> = {};
     ingredients.forEach((item) => {
@@ -469,6 +403,53 @@ const AdminProducts = () => {
     if (!baseUnit) return [];
     return getCompatibleUnits(baseUnit);
   }, [selectedNewRecipeIngredient]);
+
+  useEffect(() => {
+    if (!newRecipeIngredient) return;
+    const isValidIngredient = ingredients.some(
+      (item) =>
+        item.id === newRecipeIngredient &&
+        item.category_id === newRecipeCategoryId
+    );
+    if (!isValidIngredient) {
+      setNewRecipeIngredient("");
+      setNewRecipeInputUnit("");
+    }
+  }, [ingredients, newRecipeCategoryId, newRecipeIngredient]);
+
+  useEffect(() => {
+    if (!addonIngredientId || addonCategoryId) return;
+    const matched = ingredients.find((item) => item.id === addonIngredientId);
+    if (matched?.category_id) {
+      setAddonCategoryId(matched.category_id);
+    }
+  }, [ingredients, addonIngredientId, addonCategoryId]);
+
+  useEffect(() => {
+    if (!addonIngredientId) return;
+    const isValidIngredient = ingredients.some(
+      (item) => item.id === addonIngredientId && item.category_id === addonCategoryId
+    );
+    if (!isValidIngredient) {
+      setAddonIngredientId("");
+      setAddonForm((prev) => ({
+        ...prev,
+        ingredientQuantity: "",
+        ingredientInputUnit: "",
+      }));
+    }
+  }, [ingredients, addonCategoryId, addonIngredientId]);
+
+  useEffect(() => {
+    if (!selectedAddonIngredient) {
+      setAddonForm((prev) => ({ ...prev, ingredientInputUnit: "" }));
+      return;
+    }
+    setAddonForm((prev) => ({
+      ...prev,
+      ingredientInputUnit: prev.ingredientInputUnit || selectedAddonIngredient.unit,
+    }));
+  }, [selectedAddonIngredient?.id]);
 
   useEffect(() => {
     if (!selectedNewRecipeIngredient) {
@@ -513,6 +494,7 @@ const AdminProducts = () => {
   const openAddAddonModal = () => {
     setEditAddon(null);
     setAddonForm(initialAddonForm);
+    setAddonCategoryId("");
     setAddonIngredientId("");
     if (!ingredients.length) {
       void fetchIngredients();
@@ -525,20 +507,35 @@ const AdminProducts = () => {
     if (!ingredients.length) {
       void fetchIngredients();
     }
-    const matchedIngredient = ingredients.find(
-      (item) => item.name.trim().toLowerCase() === addon.name.trim().toLowerCase(),
+    const matchedIngredient =
+      ingredients.find((item) => item.id === String(addon.ingredient_id ?? "")) ??
+      ingredients.find(
+        (item) => item.name.trim().toLowerCase() === addon.name.trim().toLowerCase(),
+      );
+    setAddonCategoryId(
+      matchedIngredient?.category_id ||
+        String(addon.ingredient_category_id ?? "")
     );
-    setAddonIngredientId(matchedIngredient?.id ?? "");
+    setAddonIngredientId(
+      matchedIngredient?.id || String(addon.ingredient_id ?? "")
+    );
     setAddonForm({
       name: addon.name,
       price: String(addon.price),
       image: null,
+      ingredientQuantity:
+        addon.ingredient_quantity && addon.ingredient_quantity > 0
+          ? String(addon.ingredient_quantity)
+          : "",
+      ingredientInputUnit:
+        matchedIngredient?.unit || String(addon.ingredient_unit ?? ""),
     });
     setShowAddonModal(true);
   };
 
   const openRecipeModal = async (product: Product) => {
     setSelectedRecipeProduct(product);
+    setNewRecipeCategoryId("");
     setNewRecipeIngredient("");
     setNewRecipeQuantity("");
     setNewRecipeInputUnit("");
@@ -623,6 +620,7 @@ const AdminProducts = () => {
     setSelectedRecipeProduct(null);
     setRecipes([]);
     setRecipeMode("view");
+    setNewRecipeCategoryId("");
     setNewRecipeIngredient("");
     setNewRecipeQuantity("");
     setNewRecipeInputUnit("");
@@ -645,6 +643,7 @@ const AdminProducts = () => {
   const closeAddonModal = () => {
     setShowAddonModal(false);
     setEditAddon(null);
+    setAddonCategoryId("");
     setAddonIngredientId("");
     setAddonForm(initialAddonForm);
   };
@@ -727,15 +726,39 @@ const AdminProducts = () => {
   };
 
   const saveAddon = async () => {
-    if (!addonForm.name.trim() || !addonForm.price) {
-      toast.error("Addon name and price are required.");
+    if (!addonCategoryId || !addonIngredientId) {
+      toast.error("Ingredient category and ingredient are required.");
       return;
     }
+
+    if (!addonForm.name.trim() || !addonForm.price || !addonForm.ingredientQuantity) {
+      toast.error("Addon name, price, and ingredient quantity are required.");
+      return;
+    }
+
+    const selectedIngredient = ingredients.find((item) => item.id === addonIngredientId);
+    if (!selectedIngredient) {
+      toast.error("Select a valid ingredient.");
+      return;
+    }
+
+    const inputQty = Number(addonForm.ingredientQuantity);
+    if (!Number.isFinite(inputQty) || inputQty <= 0) {
+      toast.error("Enter a valid ingredient quantity.");
+      return;
+    }
+
+    const baseUnit = selectedIngredient.unit || "unit";
+    const fromUnit = addonForm.ingredientInputUnit || baseUnit;
+    const normalizedQty = convertToBaseUnit(inputQty, fromUnit, baseUnit);
+    const quantityForApi = String(Number(normalizedQty.toFixed(6)));
 
     setIsSavingAddon(true);
     const formData = new FormData();
     formData.append("name", addonForm.name.trim());
     formData.append("price", addonForm.price);
+    formData.append("ingredient_id", addonIngredientId);
+    formData.append("ingredient_quantity", quantityForApi);
     if (addonForm.image) {
       formData.append("image", addonForm.image);
     }
@@ -1005,6 +1028,7 @@ const AdminProducts = () => {
         toast.error("Failed to add recipe item.");
         return;
       }
+      setNewRecipeCategoryId("");
       setNewRecipeIngredient("");
       setNewRecipeQuantity("");
       await fetchProductRecipes(selectedRecipeProduct.id);
@@ -1156,934 +1180,225 @@ const saveCombo = async () => {
           display: none;
         }
       `}</style>
-      <div className="rounded-2xl border border-border bg-gradient-to-br from-white via-violet-50 to-purple-50 p-4 md:p-5 mb-5 shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Products</h1>
-            <p className="text-xs text-muted-foreground mt-1">Design, manage, and publish your full cafe menu.</p>
-            <div className="mt-3 inline-flex rounded-full border border-violet-200 bg-white p-1 text-xs font-semibold">
-              <button
-                onClick={() => setCatalogMode(CATALOG_PRODUCTS)}
-                className={`rounded-full px-3 py-1 ${catalogMode === CATALOG_PRODUCTS ? "bg-violet-600 text-white" : "text-violet-700"}`}
-              >
-                Products
-              </button>
-              <button
-                onClick={() => {
-                  setCatalogMode(CATALOG_ADDONS);
-                  void fetchAddons();
-                }}
-                className={`rounded-full px-3 py-1 ${catalogMode === CATALOG_ADDONS ? "bg-violet-600 text-white" : "text-violet-700"}`}
-              >
-                Addons
-              </button>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            {catalogMode === CATALOG_PRODUCTS && (
-              <button
-                onClick={openAddCategoryModal}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm rounded-full border border-purple-300 bg-white hover:bg-purple-50 transition"
-              >
-                <Layers className="w-3.5 h-3.5" />
-                Add Category
-              </button>
-            )}
-
-            <button
-              onClick={openAddAddonModal}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm rounded-full bg-purple-600 text-white hover:bg-purple-700 transition"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add Addon
-            </button>
-
-            {catalogMode === CATALOG_PRODUCTS && (
-              <button
-                onClick={activeCategory === COMBO_CATEGORY_NAME ? openAddComboModal : openAddProductModal}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm rounded-full bg-purple-600 text-white hover:bg-purple-700 transition"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                {activeCategory === COMBO_CATEGORY_NAME ? "Add Combo" : "Add Product"}
-              </button>
-            )}
-          </div>
-        </div>
-
-        
-      </div>
-
-
+      <ProductsHeader
+        catalogMode={catalogMode}
+        activeCategory={activeCategory}
+        onCatalogProducts={() => setCatalogMode(CATALOG_PRODUCTS)}
+        onCatalogAddons={() => {
+          setCatalogMode(CATALOG_ADDONS);
+          void fetchAddons();
+        }}
+        onAddCategory={openAddCategoryModal}
+        onAddAddon={openAddAddonModal}
+        onAddProductOrCombo={activeCategory === COMBO_CATEGORY_NAME ? openAddComboModal : openAddProductModal}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {catalogMode === CATALOG_PRODUCTS && (
-        <aside className="lg:col-span-3 xl:col-span-3 h-fit rounded-2xl border border-purple-100 bg-gradient-to-b from-white to-violet-50/60 p-3 shadow-sm">
-          <div className="mb-3 rounded-xl border border-purple-100 bg-white/90 p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-purple-700">
-              Category Control
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">Filter products by menu groups instantly.</p>
-            <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-violet-100 px-2.5 py-1 text-[11px] font-medium text-violet-700">
-              <Layers className="h-3.5 w-3.5" />
-              {categories.length + 1} categories
-            </div>
-          </div>
-
-          <div className="category-scroll max-h-[560px] overflow-y-auto space-y-2 pr-0">
-            {categories.map((cat) => {
-              const active = activeCategory === cat.name;
-              const img = cat.image_url || cat.image || placeholderCategoryImage;
-              const countForCategory =
-                cat.name === "All"
-                  ? products.length
-                  : products.filter((p) => p.category_name === cat.name).length;
-
-              return (
-                <div
-                  key={cat.id}
-                  className={`group w-full rounded-xl border p-2.5 text-left transition ${
-                    active
-                      ? "border-purple-500 bg-purple-50 shadow-[0_6px_18px_rgba(124,58,237,0.14)]"
-                      : "border-purple-100 bg-white/80 hover:border-purple-300 hover:bg-purple-50/60"
-                  }`}
-                >
-                  <button onClick={() => void handleSelectCategory(cat.name)} className="w-full text-left">
-                    <div className="flex items-center gap-3">
-                      <div className="h-11 w-11 flex-shrink-0 overflow-hidden rounded-xl ring-2 ring-white shadow-sm">
-                        <img src={img} alt={cat.name} className="h-full w-full object-cover" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p
-                          className={`truncate text-xs font-semibold ${
-                            active ? "text-purple-800" : "text-foreground"
-                          }`}
-                        >
-                          {cat.name}
-                        </p>
-                        <p className="mt-0.5 text-[11px] text-muted-foreground">
-                          {countForCategory} item{countForCategory === 1 ? "" : "s"}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-
-                  {cat.id !== "all" && (
-                    <div className="mt-2 flex items-center justify-end gap-1.5">
-                      <button
-                        onClick={() => openEditCategoryModal(cat)}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-purple-200 bg-white text-purple-700 hover:bg-purple-50"
-                        title={`Edit ${cat.name}`}
-                      >
-                        <Edit2 className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={() => openDeleteCategoryModal(cat)}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-rose-200 bg-white text-rose-600 hover:bg-rose-50"
-                        title={`Delete ${cat.name}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            <div
-              className={`group w-full rounded-xl border p-2.5 text-left transition ${
-                activeCategory === COMBO_CATEGORY_NAME
-                  ? "border-purple-500 bg-purple-50 shadow-[0_6px_18px_rgba(124,58,237,0.14)]"
-                  : "border-purple-100 bg-white/80 hover:border-purple-300 hover:bg-purple-50/60"
-              }`}
-            >
-              <button
-                onClick={() => void handleSelectCategory(COMBO_CATEGORY_NAME)}
-                className="w-full text-left"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="h-11 w-11 flex-shrink-0 overflow-hidden rounded-xl ring-2 ring-white shadow-sm">
-                    <img
-                      src={placeholderCategoryImage}
-                      alt={COMBO_CATEGORY_NAME}
-                      className="h-full w-full object-cover"
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p
-                      className={`truncate text-xs font-semibold ${
-                        activeCategory === COMBO_CATEGORY_NAME
-                          ? "text-purple-800"
-                          : "text-foreground"
-                      }`}
-                    >
-                      {COMBO_CATEGORY_NAME}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">
-                      {combos.length} combo{combos.length === 1 ? "" : "s"}
-                    </p>
-                  </div>
-                </div>
-              </button>
-            </div>
-          </div>
-        </aside>
+          <CategorySidebar
+            categoriesLoading={categoriesLoading}
+            categories={categories}
+            products={products}
+            combosCount={combos.length}
+            activeCategory={activeCategory}
+            onSelectCategory={(categoryName) => {
+              void handleSelectCategory(categoryName);
+            }}
+            onEditCategory={openEditCategoryModal}
+            onDeleteCategory={openDeleteCategoryModal}
+          />
         )}
 
-        <section className={catalogMode === CATALOG_PRODUCTS ? "lg:col-span-9 xl:col-span-9" : "lg:col-span-12 xl:col-span-12"}>
-          <div className="relative mb-4 flex items-center justify-between gap-3">
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={
-                catalogMode === CATALOG_ADDONS
-                  ? "Search addons..."
-                  : activeCategory === COMBO_CATEGORY_NAME
-                  ? "Search combos..."
-                  : "Search products..."
-              }
-              className="w-full md:w-[360px] rounded-xl border border-purple-200 bg-white py-2.5 pl-10 pr-3 text-sm shadow-sm outline-none focus:border-purple-400"
-            />
-           
-            <span className="hidden rounded-full border border-violet-200 bg-white px-3 py-1.5 text-xs font-medium text-violet-700 md:inline-flex">
-              {catalogMode === CATALOG_ADDONS
-                ? "All Addons"
-                : activeCategory === "All"
-                ? "All Categories"
-                : activeCategory}
-            </span>
-          </div>
-
-          <div
-            className={
-              catalogMode === CATALOG_ADDONS
-                ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-5 gap-4"
-                : "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4"
-            }
-          >
-            {catalogMode === CATALOG_ADDONS &&
-              filteredAddons.map((addon, idx) => (
-              <motion.div
-                key={addon.id}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.03 }}
-                className="bg-white border rounded-xl overflow-hidden shadow-sm hover:shadow-md transition"
-              >
-                <div className="h-36 bg-purple-50 relative">
-                  {addon.image_url ? (
-                    <img src={addon.image_url} alt={addon.name} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="h-full flex items-center justify-center text-xl">Addon</div>
-                  )}
-                </div>
-
-                <div className="p-3">
-                  <h3 className="font-semibold text-sm leading-tight">{addon.name}</h3>
-                  <div className="mt-3 flex items-center justify-between">
-                    <p className="text-base font-bold">Rs.{addon.price.toFixed(2)}</p>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => openEditAddonModal(addon)}
-                        className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-purple-50"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          setEditAddon(addon);
-                          setShowDeleteAddonModal(true);
-                        }}
-                        className="w-7 h-7 rounded-full border border-rose-200 text-rose-600 flex items-center justify-center hover:bg-rose-50"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-
-            {catalogMode === CATALOG_PRODUCTS && activeCategory !== COMBO_CATEGORY_NAME &&
-              filteredProducts.map((product, idx) => (
-              <motion.div
-                key={product.id}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.03 }}
-                className="bg-white border rounded-xl overflow-hidden shadow-sm hover:shadow-md transition"
-              >
-                <div className="h-36 bg-purple-50 relative">
-                  {product.image_url ? (
-                    <img src={product.image_url} alt={product.name} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="h-full flex items-center justify-center text-xl">?</div>
-                  )}
-
-                  <button
-                    onClick={() => toggleAvailability(product.id)}
-                    className={`absolute top-2 right-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                      product.is_active
-                        ? "bg-purple-100 text-purple-700"
-                        : "bg-slate-100 text-slate-600"
-                    }`}
-                  >
-                    <Zap className="w-3 h-3" />
-                    {product.is_active ? "Active" : "Inactive"}
-                  </button>
-                </div>
-
-                <div className="p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h3 className="font-semibold text-sm leading-tight">{product.name}</h3>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">{product.category_name}</p>
-                    </div>
-                    <button
-                      onClick={() => openRecipeModal(product)}
-                      className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-1 text-[10px] font-semibold text-violet-700 hover:bg-violet-100"
-                    >
-                      <BookOpen className="w-3.5 h-3.5" />
-                      Recipe
-                    </button>
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between">
-                    <div>
-                      <p className="text-base font-bold">Rs.{product.price.toFixed(2)}</p>
-                      <p className="text-[11px] text-muted-foreground">GST {product.gst_percent}%</p>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => openEditProductModal(product)}
-                        className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-purple-50"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setEditProduct(product);
-                          setShowDeleteModal(true);
-                        }}
-                        className="w-7 h-7 rounded-full border border-rose-200 text-rose-600 flex items-center justify-center hover:bg-rose-50"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-
-            {catalogMode === CATALOG_PRODUCTS && activeCategory === COMBO_CATEGORY_NAME &&
-              (comboLoading ? (
-                <div className="col-span-full rounded-xl border border-dashed border-violet-200 bg-violet-50 p-5 text-sm text-violet-700">
-                  Loading combos...
-                </div>
-              ) : (
-                filteredCombos.map((combo, idx) => (
-                  <motion.div
-                    key={combo.id}
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: idx * 0.03 }}
-                    className="bg-white border rounded-xl overflow-hidden shadow-sm hover:shadow-md transition"
-                  >
-                    <div className="h-36 bg-violet-50 relative">
-                      {combo.image_url ? (
-                        <img src={combo.image_url} alt={combo.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="h-full flex items-center justify-center text-xl">Combo</div>
-                      )}
-                      <button
-                        onClick={() => void toggleComboAvailability(combo.id)}
-                        className={`absolute top-2 right-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                          combo.is_active ? "bg-purple-100 text-purple-700" : "bg-slate-100 text-slate-600"
-                        }`}
-                      >
-                        <Zap className="w-3 h-3" />
-                        {combo.is_active ? "Active" : "Inactive"}
-                      </button>
-                    </div>
-
-                    <div className="p-3">
-                      <h3 className="font-semibold text-sm leading-tight">{combo.name}</h3>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">
-                        {combo.items.length} item{combo.items.length === 1 ? "" : "s"}
-                      </p>
-                      <div className="mt-2 space-y-0.5">
-                        {combo.items.slice(0, 2).map((item) => (
-                          <p key={item.id} className="text-[11px] text-muted-foreground truncate">
-                            {item.product_name} x {item.quantity}
-                          </p>
-                        ))}
-                      </div>
-
-                      <div className="mt-3 flex items-center justify-between">
-                        <p className="text-base font-bold">Rs.{combo.price.toFixed(2)}</p>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => openEditComboModal(combo)}
-                            className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-purple-50"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              setEditCombo(combo);
-                              setShowDeleteComboModal(true);
-                            }}
-                            className="w-7 h-7 rounded-full border border-rose-200 text-rose-600 flex items-center justify-center hover:bg-rose-50"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                      <p className="mt-1 text-[11px] text-muted-foreground">GST {combo.gst_percent}%</p>
-                    </div>
-                  </motion.div>
-                ))
-              ))}
-          </div>
-        </section>
+        <CatalogGrid
+          catalogMode={catalogMode}
+          activeCategory={activeCategory}
+          search={search}
+          onSearchChange={setSearch}
+          addonsLoading={addonsLoading}
+          productsLoading={productsLoading}
+          comboLoading={comboLoading}
+          filteredAddons={filteredAddons}
+          filteredProducts={filteredProducts}
+          filteredCombos={filteredCombos}
+          onEditAddon={openEditAddonModal}
+          onDeleteAddon={(addon) => {
+            setEditAddon(addon);
+            setShowDeleteAddonModal(true);
+          }}
+          onToggleProductAvailability={(id) => {
+            void toggleAvailability(id);
+          }}
+          onOpenRecipe={(product) => {
+            void openRecipeModal(product);
+          }}
+          onEditProduct={openEditProductModal}
+          onDeleteProduct={(product) => {
+            setEditProduct(product);
+            setShowDeleteModal(true);
+          }}
+          onToggleComboAvailability={(id) => {
+            void toggleComboAvailability(id);
+          }}
+          onEditCombo={openEditComboModal}
+          onDeleteCombo={(combo) => {
+            setEditCombo(combo);
+            setShowDeleteComboModal(true);
+          }}
+        />
       </div>
 
-      <FormModal
+      <ProductFormModal
         open={showProductModal}
-        title={editProduct ? "Edit Product" : "Add Product"}
+        editProduct={editProduct}
+        categories={categories}
+        productForm={productForm}
+        setProductForm={setProductForm}
+        isSavingProduct={isSavingProduct}
         onClose={closeProductModal}
-      >
-        <div className="space-y-4">
-          <input
-            value={productForm.name}
-            onChange={(e) => setProductForm((prev) => ({ ...prev, name: e.target.value }))}
-            placeholder="Product name"
-            className="w-full border p-2.5 rounded-lg"
-          />
+        onSave={() => {
+          void saveProduct();
+        }}
+      />
 
-          <select
-            value={productForm.categoryId}
-            onChange={(e) => setProductForm((prev) => ({ ...prev, categoryId: e.target.value }))}
-            className="w-full border p-2.5 rounded-lg"
-          >
-            <option value="">Select category</option>
-            {categories
-              .filter((c) => c.id !== "all")
-              .map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-          </select>
-
-          <div className="grid grid-cols-2 gap-3">
-            <input
-              value={productForm.price}
-              onChange={(e) => setProductForm((prev) => ({ ...prev, price: e.target.value }))}
-              placeholder="Price"
-              type="number"
-              className="w-full border p-2.5 rounded-lg"
-            />
-
-            <input
-              value={productForm.gstPercent}
-              onChange={(e) => setProductForm((prev) => ({ ...prev, gstPercent: e.target.value }))}
-              placeholder="GST %"
-              type="number"
-              className="w-full border p-2.5 rounded-lg"
-            />
-          </div>
-
-          <input
-            type="file"
-            onChange={(e) =>
-              setProductForm((prev) => ({
-                ...prev,
-                image: e.target.files?.[0] ?? null,
-              }))
-            }
-          />
-
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={productForm.isActive}
-              onChange={(e) =>
-                setProductForm((prev) => ({
-                  ...prev,
-                  isActive: e.target.checked,
-                }))
-              }
-            />
-            Product is active
-          </label>
-
-          <button
-            onClick={saveProduct}
-            disabled={isSavingProduct}
-            className="w-full bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white py-2.5 rounded-lg"
-          >
-            {isSavingProduct ? "Saving..." : "Save Product"}
-          </button>
-        </div>
-      </FormModal>
-
-      <FormModal
+      <CategoryFormModal
         open={showCategoryModal}
-        title={editCategory ? "Edit Category" : "Add Category"}
+        editCategory={editCategory}
+        categoryForm={categoryForm}
+        setCategoryForm={setCategoryForm}
+        isSavingCategory={isSavingCategory}
         onClose={closeAddCategoryModal}
-      >
-        <div className="space-y-4">
-          <input
-            value={categoryForm.name}
-            onChange={(e) => setCategoryForm((prev) => ({ ...prev, name: e.target.value }))}
-            placeholder="Category name"
-            className="w-full border p-2.5 rounded-lg"
-          />
+        onSave={() => {
+          void saveCategory();
+        }}
+      />
 
-          <input
-            type="file"
-            onChange={(e) =>
-              setCategoryForm((prev) => ({
-                ...prev,
-                image: e.target.files?.[0] ?? null,
-              }))
-            }
-          />
-
-          <button
-            onClick={saveCategory}
-            disabled={isSavingCategory}
-            className="w-full bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white py-2.5 rounded-lg"
-          >
-            {isSavingCategory ? "Saving..." : editCategory ? "Update Category" : "Save Category"}
-          </button>
-        </div>
-      </FormModal>
-
-      <FormModal
+      <AddonFormModal
         open={showAddonModal}
-        title={editAddon ? "Edit Addon" : "Add Addon"}
+        editAddon={editAddon}
+        addonForm={addonForm}
+        setAddonForm={setAddonForm}
+        addonCategoryId={addonCategoryId}
+        setAddonCategoryId={setAddonCategoryId}
+        ingredientCategories={recipeIngredientCategories}
+        addonIngredientId={addonIngredientId}
+        setAddonIngredientId={setAddonIngredientId}
+        ingredients={filteredAddonIngredients}
+        selectedAddonIngredient={selectedAddonIngredient}
+        addonUnitOptions={addonUnitOptions}
+        isSavingAddon={isSavingAddon}
         onClose={closeAddonModal}
-      >
-        <div className="space-y-4">
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-violet-800">Ingredient (from Ingredients Entry)</label>
-            <select
-              value={addonIngredientId}
-              onChange={(e) => {
-                const nextId = e.target.value;
-                setAddonIngredientId(nextId);
-                const selectedIngredient = ingredients.find((item) => item.id === nextId);
-                if (selectedIngredient) {
-                  setAddonForm((prev) => ({ ...prev, name: selectedIngredient.name }));
-                }
-              }}
-              className="w-full border p-2.5 rounded-lg"
-            >
-              <option value="">Select ingredient</option>
-              {ingredients.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </div>
+        onSave={() => {
+          void saveAddon();
+        }}
+      />
 
-          <input
-            value={addonForm.name}
-            onChange={(e) => setAddonForm((prev) => ({ ...prev, name: e.target.value }))}
-            placeholder="Addon name"
-            className="w-full border p-2.5 rounded-lg"
-          />
-
-          <input
-            value={addonForm.price}
-            onChange={(e) => setAddonForm((prev) => ({ ...prev, price: e.target.value }))}
-            placeholder="Price"
-            type="number"
-            className="w-full border p-2.5 rounded-lg"
-          />
-
-          <input
-            type="file"
-            onChange={(e) =>
-              setAddonForm((prev) => ({
-                ...prev,
-                image: e.target.files?.[0] ?? null,
-              }))
-            }
-          />
-
-          <button
-            onClick={saveAddon}
-            disabled={isSavingAddon}
-            className="w-full bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white py-2.5 rounded-lg"
-          >
-            {isSavingAddon ? "Saving..." : editAddon ? "Update Addon" : "Save Addon"}
-          </button>
-        </div>
-      </FormModal>
-
-      <FormModal
+      <ConfirmDeleteModal
         open={showDeleteCategoryModal}
         title="Delete Category"
+        message={`Delete category "${editCategory?.name ?? ""}"?`}
+        buttonLabel="Delete Category"
         onClose={() => {
           setShowDeleteCategoryModal(false);
           setEditCategory(null);
         }}
-      >
-        <div className="space-y-4">
-          <p>Delete category "{editCategory?.name}"?</p>
-          <button
-            onClick={deleteCategory}
-            className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg"
-          >
-            Delete Category
-          </button>
-        </div>
-      </FormModal>
+        onConfirm={() => {
+          void deleteCategory();
+        }}
+      />
 
-      <FormModal open={showDeleteModal} title="Delete Product" onClose={() => setShowDeleteModal(false)}>
-        <div className="space-y-4">
-          <p>Delete this product?</p>
-          <button
-            onClick={deleteProduct}
-            className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg"
-          >
-            Delete
-          </button>
-        </div>
-      </FormModal>
+      <ConfirmDeleteModal
+        open={showDeleteModal}
+        title="Delete Product"
+        message="Delete this product?"
+        buttonLabel="Delete"
+        onClose={() => setShowDeleteModal(false)}
+        onConfirm={() => {
+          void deleteProduct();
+        }}
+      />
 
-      <FormModal
+      <ConfirmDeleteModal
         open={showDeleteAddonModal}
         title="Delete Addon"
+        message={`Delete addon "${editAddon?.name ?? ""}"?`}
+        buttonLabel="Delete Addon"
         onClose={() => {
           setShowDeleteAddonModal(false);
           setEditAddon(null);
         }}
-      >
-        <div className="space-y-4">
-          <p>Delete addon "{editAddon?.name}"?</p>
-          <button
-            onClick={deleteAddon}
-            className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg"
-          >
-            Delete Addon
-          </button>
-        </div>
-      </FormModal>
+        onConfirm={() => {
+          void deleteAddon();
+        }}
+      />
 
-      <FormModal
+      <ComboFormModal
         open={showComboModal}
-        title={editCombo ? "Edit Combo" : "Add Combo"}
+        editCombo={editCombo}
+        comboForm={comboForm}
+        setComboForm={setComboForm}
+        products={products}
+        isSavingCombo={isSavingCombo}
         onClose={closeComboModal}
-      >
-        <div className="space-y-4">
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-violet-800">Combo Name</label>
-            <input
-              value={comboForm.name}
-              onChange={(e) => setComboForm((prev) => ({ ...prev, name: e.target.value }))}
-              placeholder="Enter combo name"
-              className="w-full border p-2.5 rounded-lg"
-            />
-          </div>
+        onSave={() => {
+          void saveCombo();
+        }}
+        onAddItem={addComboFormItem}
+        onRemoveItem={removeComboFormItem}
+        onUpdateItem={updateComboFormItem}
+      />
 
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-violet-800">Price</label>
-            <input
-              value={comboForm.price}
-              onChange={(e) => setComboForm((prev) => ({ ...prev, price: e.target.value }))}
-              placeholder="Enter combo price"
-              type="number"
-              className="w-full border p-2.5 rounded-lg"
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-violet-800">GST Percent</label>
-            <input
-              value={comboForm.gstPercent}
-              onChange={(e) => setComboForm((prev) => ({ ...prev, gstPercent: e.target.value }))}
-              placeholder="Enter GST %"
-              type="number"
-              className="w-full border p-2.5 rounded-lg"
-            />
-          </div>
-
-          {(comboForm.imageUrl || comboForm.image) && (
-            <div className="rounded-lg border border-violet-100 bg-violet-50/40 p-2">
-              <img
-                src={comboForm.image ? URL.createObjectURL(comboForm.image) : comboForm.imageUrl}
-                alt="Combo preview"
-                className="h-28 w-full rounded-md object-cover"
-              />
-            </div>
-          )}
-
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-violet-800">Combo Image</label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) =>
-                setComboForm((prev) => ({
-                  ...prev,
-                  image: e.target.files?.[0] ?? null,
-                }))
-              }
-            />
-          </div>
-
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={comboForm.isActive}
-              onChange={(e) => setComboForm((prev) => ({ ...prev, isActive: e.target.checked }))}
-            />
-            Combo is active
-          </label>
-
-          <div className="space-y-2 rounded-lg border border-violet-100 bg-violet-50/40 p-3">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">
-                Combo Items
-              </p>
-              <button
-                onClick={addComboFormItem}
-                className="rounded-md border border-violet-200 px-2 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-100"
-              >
-                Add Item
-              </button>
-            </div>
-
-            {comboForm.items.map((item, idx) => (
-              <div key={`${idx}-${item.productId}`} className="grid grid-cols-12 gap-2">
-                <select
-                  value={item.productId}
-                  onChange={(e) => updateComboFormItem(idx, "productId", e.target.value)}
-                  className="col-span-7 rounded-lg border p-2 text-sm"
-                >
-                  <option value="">Select product</option>
-                  {products.map((product) => (
-                    <option key={product.id} value={product.id}>
-                      {product.name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  value={item.quantity}
-                  onChange={(e) => updateComboFormItem(idx, "quantity", e.target.value)}
-                  type="number"
-                  min="1"
-                  placeholder="Qty"
-                  className="col-span-3 rounded-lg border p-2 text-sm"
-                />
-                <button
-                  onClick={() => removeComboFormItem(idx)}
-                  className="col-span-2 inline-flex items-center justify-center rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50"
-                  title="Remove item"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-
-          <button
-            onClick={saveCombo}
-            disabled={isSavingCombo}
-            className="w-full bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white py-2.5 rounded-lg"
-          >
-            {isSavingCombo ? "Saving..." : editCombo ? "Update Combo" : "Save Combo"}
-          </button>
-        </div>
-      </FormModal>
-
-      <FormModal
+      <ConfirmDeleteModal
         open={showDeleteComboModal}
         title="Delete Combo"
+        message={`Delete combo "${editCombo?.name ?? ""}"?`}
+        buttonLabel="Delete Combo"
         onClose={() => {
           setShowDeleteComboModal(false);
           setEditCombo(null);
         }}
-      >
-        <div className="space-y-4">
-          <p>Delete combo "{editCombo?.name}"?</p>
-          <button
-            onClick={deleteCombo}
-            className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg"
-          >
-            Delete Combo
-          </button>
-        </div>
-      </FormModal>
+        onConfirm={() => {
+          void deleteCombo();
+        }}
+      />
 
-      <FormModal
+      <RecipeFormModal
         open={showRecipeModal}
-        title={selectedRecipeProduct ? `Recipe - ${selectedRecipeProduct.name}` : "Recipe"}
+        selectedRecipeProductName={selectedRecipeProduct?.name ?? null}
         onClose={closeRecipeModal}
-      >
-        <div className="space-y-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="inline-flex rounded-full border border-violet-200 bg-violet-50 p-1 text-xs font-semibold">
-              <button
-                onClick={() => setRecipeMode("view")}
-                className={`rounded-full px-3 py-1 ${recipeMode === "view" ? "bg-violet-600 text-white" : "text-violet-700"}`}
-              >
-                View Mode
-              </button>
-              <button
-                onClick={() => setRecipeMode("edit")}
-                className={`rounded-full px-3 py-1 ${recipeMode === "edit" ? "bg-violet-600 text-white" : "text-violet-700"}`}
-              >
-                Edit Mode
-              </button>
-            </div>
-          </div>
-
-          {recipeLoading ? (
-            <p className="text-sm text-muted-foreground">Loading recipe...</p>
-          ) : (
-            <div className="max-h-[260px] space-y-2 overflow-y-auto pr-1">
-              {!recipes.length ? (
-                <div className="rounded-lg border border-dashed border-violet-200 bg-violet-50 px-3 py-4 text-sm text-violet-700">
-                  No recipe items found. Add ingredients in Edit Mode.
-                </div>
-              ) : (
-                recipes.map((recipe) => (
-                  <div key={recipe.id} className="rounded-lg border border-border p-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-medium">{recipe.ingredient_name || recipe.ingredient}</p>
-                      {recipeMode === "view" ? (
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-md bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-700">
-                            Qty: {recipe.quantity}
-                          </span>
-                          <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
-                            Unit: {ingredientUnitById[recipe.ingredient] || "unit"}
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            step="0.001"
-                            defaultValue={recipe.quantity}
-                            onBlur={(e) => void updateRecipeQuantity(recipe, e.target.value)}
-                            className="w-24 rounded-md border p-1.5 text-xs"
-                          />
-                          <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
-                            {ingredientUnitById[recipe.ingredient] || "unit"}
-                          </span>
-                          <button
-                            onClick={() => void deleteRecipeItem(recipe.id)}
-                            disabled={recipeSaving}
-                            className="rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 disabled:opacity-60"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {recipeMode === "edit" && (
-            <div className="space-y-2 rounded-lg border border-violet-100 bg-violet-50/40 p-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">Add Ingredient</p>
-              <select
-                value={newRecipeIngredient}
-                onChange={(e) => setNewRecipeIngredient(e.target.value)}
-                className="w-full rounded-lg border p-2 text-sm"
-              >
-                <option value="">Select ingredient</option>
-                {ingredients.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} ({item.unit})
-                  </option>
-                ))}
-              </select>
-              <input
-                type="number"
-                step="0.001"
-                value={newRecipeQuantity}
-                onChange={(e) => setNewRecipeQuantity(e.target.value)}
-                placeholder="Quantity (e.g. 0.250)"
-                className="w-full rounded-lg border p-2 text-sm"
-              />
-              <select
-                value={newRecipeInputUnit}
-                onChange={(e) => setNewRecipeInputUnit(e.target.value)}
-                disabled={!selectedNewRecipeIngredient}
-                className="w-full rounded-lg border bg-white p-2 text-sm text-slate-700 disabled:bg-slate-50"
-              >
-                {!selectedNewRecipeIngredient ? (
-                  <option value="">Select unit</option>
-                ) : (
-                  recipeUnitOptions.map((unit) => (
-                    <option key={unit} value={unit}>
-                      {unit}
-                    </option>
-                  ))
-                )}
-              </select>
-              {selectedNewRecipeIngredient ? (
-                <p className="text-[11px] text-slate-500">
-                  Saved in base unit: <span className="font-semibold">{selectedNewRecipeIngredient.unit}</span>
-                </p>
-              ) : null}
-              <button
-                onClick={addRecipeItem}
-                disabled={recipeSaving}
-                className="w-full rounded-lg bg-violet-600 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60"
-              >
-                {recipeSaving ? "Saving..." : "Add Line"}
-              </button>
-            </div>
-          )}
-
-          {recipeMode === "view" && recipes.length > 0 && (
-            <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3">
-              {!showRecipeSubmitConfirm ? (
-                <button
-                  onClick={() => setShowRecipeSubmitConfirm(true)}
-                  className="w-full rounded-lg bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                >
-                  Submit Recipe
-                </button>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-emerald-800">
-                    Confirm submit this recipe list?
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setShowRecipeSubmitConfirm(false)}
-                      className="w-1/2 rounded-lg border border-emerald-300 bg-white py-2 text-xs font-medium text-emerald-700"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={() => void submitRecipeList()}
-                      className="w-1/2 rounded-lg bg-emerald-600 py-2 text-xs font-medium text-white hover:bg-emerald-700"
-                    >
-                      Confirm Submit
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </FormModal>
+        recipeMode={recipeMode}
+        onRecipeModeChange={setRecipeMode}
+        recipeLoading={recipeLoading}
+        recipes={recipes}
+        ingredientUnitById={ingredientUnitById}
+        recipeSaving={recipeSaving}
+        onUpdateRecipeQuantity={(recipe, quantity) => {
+          void updateRecipeQuantity(recipe, quantity);
+        }}
+        onDeleteRecipeItem={(recipeId) => {
+          void deleteRecipeItem(recipeId);
+        }}
+        newRecipeCategoryId={newRecipeCategoryId}
+        onNewRecipeCategoryChange={setNewRecipeCategoryId}
+        ingredientCategories={recipeIngredientCategories}
+        newRecipeIngredient={newRecipeIngredient}
+        onNewRecipeIngredientChange={setNewRecipeIngredient}
+        ingredients={filteredRecipeIngredients}
+        newRecipeQuantity={newRecipeQuantity}
+        onNewRecipeQuantityChange={setNewRecipeQuantity}
+        newRecipeInputUnit={newRecipeInputUnit}
+        onNewRecipeInputUnitChange={setNewRecipeInputUnit}
+        selectedNewRecipeIngredient={selectedNewRecipeIngredient}
+        recipeUnitOptions={recipeUnitOptions}
+        onAddRecipeItem={() => {
+          void addRecipeItem();
+        }}
+        showRecipeSubmitConfirm={showRecipeSubmitConfirm}
+        onShowRecipeSubmitConfirmChange={setShowRecipeSubmitConfirm}
+        onSubmitRecipeList={() => {
+          void submitRecipeList();
+        }}
+      />
     </div>
   );
 };

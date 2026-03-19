@@ -385,8 +385,8 @@ export default function Reports() {
     if (category) qs.set("category", category);
     if (selectedMeta.isCouponUsage && couponSearch.trim()) qs.set("q", couponSearch.trim());
 
-    const endpointPrefix = selectedMeta.isCouponUsage ? "" : "v2/";
-    const url = `${API_BASE}/api/reports/${endpointPrefix}${selectedMeta.endpoint}${qs.toString() ? `?${qs.toString()}` : ""}`;
+    const endpoint = selectedMeta.endpoint.replace(/^\/+/, "");
+    const url = `${API_BASE}/api/reports/${endpoint}${qs.toString() ? `?${qs.toString()}` : ""}`;
     setLoading(true);
     setError(null);
     try {

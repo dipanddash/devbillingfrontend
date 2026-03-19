@@ -13,6 +13,8 @@ import {
   X,
   Pencil,
 } from "lucide-react";
+import { toast } from "sonner";
+import ConfirmActionDialog from "@/components/ConfirmActionDialog";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 
@@ -78,6 +80,7 @@ const Vendors = () => {
   const [historyData, setHistoryData] = useState<VendorHistoryResponse | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Vendor | null>(null);
   const [form, setForm] = useState({
     name: "",
     category: "",
@@ -166,6 +169,15 @@ const Vendors = () => {
     });
   };
 
+  const parseErrorMessage = async (res: Response, fallback: string) => {
+    const body = await res.json().catch(() => ({}));
+    const data = body as Record<string, unknown>;
+    if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
+    if (typeof data.error === "string" && data.error.trim()) return data.error;
+    if (Array.isArray(data.detail) && data.detail.length > 0) return String(data.detail[0]);
+    return fallback;
+  };
+
   const createVendor = async () => {
     setSaving(true);
     try {
@@ -182,13 +194,14 @@ const Vendors = () => {
           address: form.address,
         }),
       });
-      if (!res.ok) throw new Error("Failed to create vendor");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to create vendor."));
       setCreateOpen(false);
       resetForm();
       await loadVendors();
+      toast.success("Vendor created successfully.");
     } catch (err) {
       console.error("Vendor create error:", err);
-      alert("Failed to create vendor.");
+      toast.error(err instanceof Error ? err.message : "Failed to create vendor.");
     } finally {
       setSaving(false);
     }
@@ -210,33 +223,36 @@ const Vendors = () => {
           address: vendor.address ?? "",
         }),
       });
-      if (!res.ok) throw new Error("Failed to update vendor");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to update vendor."));
       await loadVendors();
       setSelectedVendor(null);
       setHistoryData(null);
+      toast.success("Vendor updated successfully.");
     } catch (err) {
       console.error("Vendor update error:", err);
-      alert("Failed to update vendor.");
+      toast.error(err instanceof Error ? err.message : "Failed to update vendor.");
     } finally {
       setSaving(false);
     }
   };
 
-  const removeVendor = async (vendor: Vendor) => {
-    if (!confirm(`Delete vendor ${vendor.name}?`)) return;
+  const removeVendor = async () => {
+    if (!deleteTarget) return;
     setSaving(true);
     try {
-      const res = await fetch(`${API_BASE}/api/inventory/vendors/${vendor.id}/`, {
+      const res = await fetch(`${API_BASE}/api/inventory/vendors/${deleteTarget.id}/`, {
         method: "DELETE",
         headers: getAuthHeaders(),
       });
-      if (!res.ok) throw new Error("Failed to delete vendor");
+      if (!res.ok) throw new Error(await parseErrorMessage(res, "Failed to delete vendor."));
       await loadVendors();
       setSelectedVendor(null);
       setHistoryData(null);
+      setDeleteTarget(null);
+      toast.success("Vendor deleted successfully.");
     } catch (err) {
       console.error("Vendor delete error:", err);
-      alert("Failed to delete vendor.");
+      toast.error(err instanceof Error ? err.message : "Failed to delete vendor.");
     } finally {
       setSaving(false);
     }
@@ -548,7 +564,7 @@ const Vendors = () => {
 
             <div className="flex flex-wrap justify-end gap-2 border-t border-violet-100 px-5 py-4">
               <button
-                onClick={() => removeVendor(selectedVendor)}
+                onClick={() => setDeleteTarget(selectedVendor)}
                 disabled={saving}
                 className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-60"
               >
@@ -582,6 +598,18 @@ const Vendors = () => {
           </div>
         </div>
       ) : null}
+
+      <ConfirmActionDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !saving) setDeleteTarget(null);
+        }}
+        title="Delete Vendor?"
+        description={`This will permanently delete ${deleteTarget?.name ?? "this vendor"} and related references may be impacted.`}
+        confirmLabel="Delete Vendor"
+        isLoading={saving}
+        onConfirm={removeVendor}
+      />
     </div>
   );
 };

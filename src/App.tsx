@@ -40,6 +40,7 @@ import StaffPurchaseEntry from "./pages/staff/PurchaseEntry";
 import NotFound from "./pages/NotFound";
 import { OfflineProvider } from "./contexts/OfflineContext";
 import OfflineIndicator from "./components/OfflineIndicator";
+import AppErrorBoundary from "./components/AppErrorBoundary";
 
 const queryClient = new QueryClient();
 
@@ -116,8 +117,10 @@ const App = () => {
         <Router>
           <AuthProvider>
             <OfflineProvider>
-              <OfflineIndicator />
-              <AppRoutes />
+              <AppErrorBoundary>
+                <OfflineIndicator />
+                <AppRoutes />
+              </AppErrorBoundary>
             </OfflineProvider>
           </AuthProvider>
         </Router>

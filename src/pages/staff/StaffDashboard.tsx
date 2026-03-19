@@ -3,11 +3,17 @@ import { useNavigate } from "react-router-dom";
 import KPICard from "@/components/KPICard";
 import StatusBadge from "@/components/StatusBadge";
 import { getOfflineOrders } from "@/offline/orders";
+import { roundRupee } from "@/lib/money";
+import {
+  DashboardHeroSkeleton,
+  DashboardKpiGridSkeleton,
+} from "@/components/ui/dashboard-skeleton";
 import {
   ArrowRight,
   CalendarDays,
   CircleDollarSign,
   CreditCard,
+  Loader2,
   Megaphone,
   ReceiptText,
   Target,
@@ -73,6 +79,7 @@ const StaffDashboard = () => {
   const [openTablesCount, setOpenTablesCount] = useState<number | null>(null);
   const [staffName, setStaffName] = useState("Staff");
   const [canTakeaway, setCanTakeaway] = useState(true);
+  const [isDashboardLoading, setIsDashboardLoading] = useState(true);
   const [todayTotals, setTodayTotals] = useState({
     revenue: 0,
     bills: 0,
@@ -104,6 +111,17 @@ const StaffDashboard = () => {
     if (Array.isArray((value as any)?.results)) return (value as any).results;
     if (Array.isArray((value as any)?.data)) return (value as any).data;
     return [];
+  };
+
+  const resolveRecentStatusVariant = (item: any): "pending" | "cooking" | "ready" | "served" | "cancelled" | "paid" => {
+    const payment = String(item?.payment_status ?? "").toUpperCase();
+    const status = String(item?.status ?? "").toUpperCase();
+    if (payment === "PAID") return "paid";
+    if (payment === "REFUNDED" || status === "CANCELLED") return "cancelled";
+    if (status === "READY") return "ready";
+    if (status === "SERVED" || status === "COMPLETED") return "served";
+    if (status === "COOKING" || status === "IN_PROGRESS") return "cooking";
+    return "pending";
   };
 
   const pickReportRows = (payload: any): any[] => {
@@ -145,6 +163,8 @@ const StaffDashboard = () => {
     };
 
     const loadDashboard = async () => {
+      const startedAt = Date.now();
+      setIsDashboardLoading(true);
       try {
         const [
           dashboardRes,
@@ -177,8 +197,8 @@ const StaffDashboard = () => {
             customer_name: String(row.customer_name ?? "").trim() || "Walk-in",
             total_amount: Number(row.total_amount ?? 0),
             order_type: String(row.order_type ?? "TAKEAWAY"),
-            status: "PENDING",
-            payment_status: "OFFLINE_PENDING_SYNC",
+            status: String(row.status ?? "NEW").toUpperCase(),
+            payment_status: String(row.payment_status ?? "UNPAID").toUpperCase(),
             created_at: String(row.created_at ?? new Date().toISOString()),
             offline_only: true,
           }));
@@ -413,18 +433,26 @@ const StaffDashboard = () => {
         }
 
         {
-          const pending = combinedTodayOrders.filter((o) =>
-            ["NEW", "PENDING"].includes(String(o?.status ?? "").toUpperCase())
-          ).length;
-          const cooking = combinedTodayOrders.filter((o) =>
-            ["IN_PROGRESS", "COOKING"].includes(String(o?.status ?? "").toUpperCase())
-          ).length;
-          const ready = combinedTodayOrders.filter((o) =>
-            ["READY"].includes(String(o?.status ?? "").toUpperCase())
-          ).length;
-          const served = combinedTodayOrders.filter((o) =>
-            ["COMPLETED", "SERVED"].includes(String(o?.status ?? "").toUpperCase())
-          ).length;
+          const pending = combinedTodayOrders.filter((o) => {
+            const payment = String(o?.payment_status ?? "").toUpperCase();
+            const status = String(o?.status ?? "").toUpperCase();
+            return payment !== "PAID" && ["NEW", "PENDING"].includes(status);
+          }).length;
+          const cooking = combinedTodayOrders.filter((o) => {
+            const payment = String(o?.payment_status ?? "").toUpperCase();
+            const status = String(o?.status ?? "").toUpperCase();
+            return payment !== "PAID" && ["IN_PROGRESS", "COOKING"].includes(status);
+          }).length;
+          const ready = combinedTodayOrders.filter((o) => {
+            const payment = String(o?.payment_status ?? "").toUpperCase();
+            const status = String(o?.status ?? "").toUpperCase();
+            return payment !== "PAID" && status === "READY";
+          }).length;
+          const served = combinedTodayOrders.filter((o) => {
+            const payment = String(o?.payment_status ?? "").toUpperCase();
+            const status = String(o?.status ?? "").toUpperCase();
+            return payment === "PAID" || ["COMPLETED", "SERVED"].includes(status);
+          }).length;
 
           setLiveQueueBoard([
             { label: "Pending", variant: "pending", count: pending },
@@ -540,6 +568,13 @@ const StaffDashboard = () => {
         }
       } catch (error) {
         console.error("Dashboard load failed:", error);
+      } finally {
+        const elapsed = Date.now() - startedAt;
+        const remaining = Math.max(0, 450 - elapsed);
+        if (remaining > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remaining));
+        }
+        setIsDashboardLoading(false);
       }
     };
 
@@ -569,75 +604,84 @@ const StaffDashboard = () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <section className="relative overflow-hidden rounded-2xl border border-border bg-card p-6 md:p-8">
-        <div
-          className="absolute inset-0 bg-no-repeat bg-center bg-[length:100%_100%]"
-          style={{
-            backgroundImage:
-              "linear-gradient(160deg,rgba(2,6,23,0.46),rgba(30,41,59,0.42)), url('https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=2200&q=80')",
-          }}
-        />
-        <div className="relative z-10">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="inline-flex items-center gap-2 rounded-full border border-white/20 px-3 py-1 text-xs font-medium text-white/90">
-                <CalendarDays className="h-3.5 w-3.5" />
-                Welcome, {staffName}
-              </p>
-              <h1 className="mt-3 text-2xl font-bold text-white md:text-3xl">Staff Business Command Center</h1>
-              <p className="mt-1 text-sm text-white/75">
-                Billing performance, customer growth, and live service execution in one dashboard.
-              </p>
-            </div>
-          </div>
+      {isDashboardLoading ? (
+        <>
+          <DashboardHeroSkeleton />
+          <DashboardKpiGridSkeleton />
+        </>
+      ) : (
+        <>
+          <section className="relative overflow-hidden rounded-2xl border border-border bg-card p-6 md:p-8">
+            <div
+              className="absolute inset-0 bg-no-repeat bg-center bg-[length:100%_100%]"
+              style={{
+                backgroundImage:
+                  "linear-gradient(160deg,rgba(2,6,23,0.46),rgba(30,41,59,0.42)), url('https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=2200&q=80')",
+              }}
+            />
+            <div className="relative z-10">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <p className="inline-flex items-center gap-2 rounded-full border border-white/20 px-3 py-1 text-xs font-medium text-white/90">
+                    <CalendarDays className="h-3.5 w-3.5" />
+                    Welcome, {staffName}
+                  </p>
+                  <h1 className="mt-3 text-2xl font-bold text-white md:text-3xl">Staff Business Command Center</h1>
+                  <p className="mt-1 text-sm text-white/75">
+                    Billing performance, customer growth, and live service execution in one dashboard.
+                  </p>
+                </div>
+              </div>
 
-          <div className="mt-6 grid grid-cols-2 gap-4 text-white md:grid-cols-4">
-            <div>
-              <p className="text-xs text-white/70">Gross Revenue</p>
-              <p className="text-xl font-semibold">Rs.{summary.revenue.toLocaleString()}</p>
+              <div className="mt-6 grid grid-cols-2 gap-4 text-white md:grid-cols-4">
+                <div>
+                  <p className="text-xs text-white/70">Gross Revenue</p>
+                  <p className="text-xl font-semibold">Rs.{summary.revenue.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-white/70">Bills Processed</p>
+                  <p className="text-xl font-semibold">{summary.bills}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-white/70">Collection Rate</p>
+                  <p className="text-xl font-semibold">{summary.collectionRate}%</p>
+                </div>
+                <div>
+                  <p className="text-xs text-white/70">Avg Bill Value</p>
+                  <p className="text-xl font-semibold">Rs.{summary.avgBill}</p>
+                </div>
+              </div>
             </div>
-            <div>
-              <p className="text-xs text-white/70">Bills Processed</p>
-              <p className="text-xl font-semibold">{summary.bills}</p>
-            </div>
-            <div>
-              <p className="text-xs text-white/70">Collection Rate</p>
-              <p className="text-xl font-semibold">{summary.collectionRate}%</p>
-            </div>
-            <div>
-              <p className="text-xs text-white/70">Avg Bill Value</p>
-              <p className="text-xl font-semibold">Rs.{summary.avgBill}</p>
-            </div>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KPICard
-          title="Total Revenue"
-          value={`Rs.${summary.revenue.toLocaleString()}`}
-          subtitle="Compared to yesterday"
-          icon={<CircleDollarSign className="h-4 w-4" />}
-        />
-        <KPICard
-          title="Total Bills"
-          value={summary.bills}
-          subtitle="All billing channels"
-          icon={<ReceiptText className="h-4 w-4" />}
-        />
-        <KPICard
-          title="Customer Conversion"
-          value={`${summary.conversion}%`}
-          subtitle="Walk-in to paid bills"
-          icon={<Target className="h-4 w-4" />}
-        />
-        <KPICard
-          title="Repeat Customers"
-          value={`${summary.repeatCustomers}%`}
-          subtitle="Retention this week"
-          icon={<UserPlus className="h-4 w-4" />}
-        />
-      </section>
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <KPICard
+              title="Total Revenue"
+              value={`Rs.${summary.revenue.toLocaleString()}`}
+              subtitle="Compared to yesterday"
+              icon={<CircleDollarSign className="h-4 w-4" />}
+            />
+            <KPICard
+              title="Total Bills"
+              value={summary.bills}
+              subtitle="All billing channels"
+              icon={<ReceiptText className="h-4 w-4" />}
+            />
+            <KPICard
+              title="Customer Conversion"
+              value={`${summary.conversion}%`}
+              subtitle="Walk-in to paid bills"
+              icon={<Target className="h-4 w-4" />}
+            />
+            <KPICard
+              title="Repeat Customers"
+              value={`${summary.repeatCustomers}%`}
+              subtitle="Retention this week"
+              icon={<UserPlus className="h-4 w-4" />}
+            />
+          </section>
+        </>
+      )}
 
       <section className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <div className="xl:col-span-2 rounded-2xl border border-border bg-card p-5 shadow-soft">
@@ -652,27 +696,36 @@ const StaffDashboard = () => {
             </span>
           </div>
 
-          <ResponsiveContainer width="100%" height={270}>
-            <AreaChart data={liveRevenueTrend}>
-              <defs>
-                <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#2563eb" stopOpacity={0.38} />
-                  <stop offset="95%" stopColor="#2563eb" stopOpacity={0.03} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="slot" tickLine={false} axisLine={false} />
-              <YAxis tickLine={false} axisLine={false} />
-              <Tooltip
-                contentStyle={{
-                  borderRadius: "12px",
-                  border: "1px solid hsl(var(--border))",
-                  background: "hsl(var(--card))",
-                }}
-              />
-              <Area type="monotone" dataKey="revenue" stroke="#2563eb" fill="url(#revFill)" strokeWidth={2.5} />
-            </AreaChart>
-          </ResponsiveContainer>
+          {isDashboardLoading ? (
+            <div className="flex h-[270px] items-center justify-center rounded-xl border border-border/70 bg-background/70">
+              <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Fetching trend data...
+              </span>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={270}>
+              <AreaChart data={liveRevenueTrend}>
+                <defs>
+                  <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.38} />
+                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0.03} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis dataKey="slot" tickLine={false} axisLine={false} />
+                <YAxis tickLine={false} axisLine={false} />
+                <Tooltip
+                  contentStyle={{
+                    borderRadius: "12px",
+                    border: "1px solid hsl(var(--border))",
+                    background: "hsl(var(--card))",
+                  }}
+                />
+                <Area type="monotone" dataKey="revenue" stroke="#2563eb" fill="url(#revFill)" strokeWidth={2.5} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
 
           <div className="mt-4">
             <div className="mb-1 flex items-center justify-between text-xs">
@@ -689,16 +742,25 @@ const StaffDashboard = () => {
           <h3 className="text-base font-semibold text-foreground">Payment Mix</h3>
           <p className="mt-1 text-xs text-muted-foreground">Channel-wise billing contribution</p>
 
-          <ResponsiveContainer width="100%" height={190}>
-            <PieChart>
-              <Pie data={livePaymentMix} dataKey="value" nameKey="name" innerRadius={45} outerRadius={72} paddingAngle={3}>
-                {livePaymentMix.map((entry) => (
-                  <Cell key={entry.name} fill={entry.color} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value: number) => `${value}%`} />
-            </PieChart>
-          </ResponsiveContainer>
+          {isDashboardLoading ? (
+            <div className="flex h-[190px] items-center justify-center rounded-xl border border-border/70 bg-background/70">
+              <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Fetching payment mix...
+              </span>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={190}>
+              <PieChart>
+                <Pie data={livePaymentMix} dataKey="value" nameKey="name" innerRadius={45} outerRadius={72} paddingAngle={3}>
+                  {livePaymentMix.map((entry) => (
+                    <Cell key={entry.name} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value: number) => `${value}%`} />
+              </PieChart>
+            </ResponsiveContainer>
+          )}
 
           <div className="space-y-2">
             {livePaymentMix.map((item) => (
@@ -723,6 +785,14 @@ const StaffDashboard = () => {
           </div>
 
           <div className="space-y-3">
+            {isDashboardLoading && recentOrders.length === 0 && (
+              <div className="rounded-xl border border-border bg-background p-3">
+                <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Fetching recent orders...
+                </span>
+              </div>
+            )}
             {recentOrders.map((item: any, index: number) => (
               <div key={String(item?.id ?? `recent-${index}`)} className="rounded-xl border border-border bg-background p-3">
                 <div className="flex items-center justify-between">
@@ -730,17 +800,7 @@ const StaffDashboard = () => {
                     #{String(item?.order_id ?? item?.bill_number ?? item?.id ?? "-")}
                   </p>
                   <StatusBadge
-                    variant={
-                      String(item?.status ?? "").toLowerCase() === "ready"
-                        ? "ready"
-                        : String(item?.status ?? "").toLowerCase() === "served" ||
-                          String(item?.status ?? "").toLowerCase() === "completed"
-                        ? "served"
-                        : String(item?.status ?? "").toLowerCase() === "cooking" ||
-                          String(item?.status ?? "").toLowerCase() === "in_progress"
-                        ? "cooking"
-                        : "pending"
-                    }
+                    variant={resolveRecentStatusVariant(item)}
                   />
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -750,7 +810,7 @@ const StaffDashboard = () => {
                   <p className="mt-1 text-[11px] font-semibold text-amber-700">Offline sync pending</p>
                 )}
                 <p className="mt-2 text-sm font-semibold text-success">
-                  Rs {asNumber(item?.total_amount ?? item?.total ?? item?.grand_total ?? item?.amount).toFixed(0)}
+                  Rs {roundRupee(item?.total_amount ?? item?.total ?? item?.grand_total ?? item?.amount)}
                 </p>
               </div>
             ))}

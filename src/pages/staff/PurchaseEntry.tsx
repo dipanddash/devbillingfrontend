@@ -78,6 +78,7 @@ export default function StaffPurchaseEntry() {
   const [newIngredientName, setNewIngredientName] = useState("");
   const [newIngredientUnit, setNewIngredientUnit] = useState<string>("pcs");
   const [newIngredientCustomUnit, setNewIngredientCustomUnit] = useState("");
+  const [newIngredientUnitPrice, setNewIngredientUnitPrice] = useState("");
   const [addingIngredient, setAddingIngredient] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -173,6 +174,7 @@ export default function StaffPurchaseEntry() {
     setNewIngredientName("");
     setNewIngredientUnit("pcs");
     setNewIngredientCustomUnit("");
+    setNewIngredientUnitPrice("");
     setShowAddIngredientModal(true);
   };
 
@@ -191,6 +193,12 @@ export default function StaffPurchaseEntry() {
       setMessage(null);
       return;
     }
+    const parsedUnitPrice = Number(newIngredientUnitPrice);
+    if (!Number.isFinite(parsedUnitPrice) || parsedUnitPrice <= 0) {
+      setError("Unit price must be greater than zero.");
+      setMessage(null);
+      return;
+    }
 
     setAddingIngredient(true);
     setError(null);
@@ -201,6 +209,7 @@ export default function StaffPurchaseEntry() {
         body: JSON.stringify({
           name,
           unit,
+          unit_price: parsedUnitPrice.toFixed(2),
           current_stock: 0,
           min_stock: 0,
         }),
@@ -549,6 +558,18 @@ export default function StaffPurchaseEntry() {
                   />
                 </div>
               ) : null}
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Price Per Unit</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={newIngredientUnitPrice}
+                  onChange={(e) => setNewIngredientUnitPrice(e.target.value)}
+                  placeholder="Ex: 120.00"
+                  className="h-10 w-full rounded-xl border border-violet-200 bg-violet-50/40 px-3 text-sm text-violet-950 outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                />
+              </div>
             </div>
 
             <div className="mt-5 flex justify-end gap-2">

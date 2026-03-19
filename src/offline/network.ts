@@ -3,6 +3,8 @@
  * Uses navigator.onLine + periodic server ping for reliable detection.
  */
 
+import { withRequestMeta } from "@/lib/requestMeta";
+
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 const HEALTH_URL = `${API_BASE}/api/sync/health/`;
 const PING_INTERVAL = 15_000; // 15 seconds
@@ -26,14 +28,43 @@ function _notify(online: boolean) {
   });
 }
 
+/**
+ * Immediately switch app network state to offline.
+ * Useful when a request fails mid-session even before heartbeat catches up.
+ */
+export function forceOfflineMode() {
+  _notify(false);
+}
+
 async function _healthPing(): Promise<boolean> {
   if (!navigator.onLine) return false;
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), PING_TIMEOUT);
-    const res = await fetch(HEALTH_URL, { signal: controller.signal, cache: "no-store" });
+    const res = await fetch(
+      HEALTH_URL,
+      withRequestMeta(
+        { signal: controller.signal, cache: "no-store" },
+        {
+          showLoader: false,
+          loaderType: "silent",
+          requestPurpose: "healthCheck",
+        },
+      ),
+    );
     clearTimeout(timeout);
-    return res.ok;
+    if (!res.ok) return false;
+    const payload = await res.json().catch(() => null) as Record<string, unknown> | null;
+    if (!payload || typeof payload !== "object") return true;
+
+    const offlineMode = Boolean(payload.offline_mode);
+    const neonReachable = Boolean(
+      payload.neon_reachable ??
+      payload.sync_available ??
+      (((payload.db as Record<string, unknown> | undefined)?.neon as Record<string, unknown> | undefined)?.ok),
+    );
+
+    return !offlineMode && neonReachable;
   } catch {
     return false;
   }

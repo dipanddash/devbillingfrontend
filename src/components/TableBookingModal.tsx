@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { type TableData } from '@/data/tables';
+import { toast } from "sonner";
 
 interface Props {
   open: boolean;
@@ -46,19 +47,19 @@ export default function TableBookingModal({
     const guests = Number(guestCount);
 
     if (!name) {
-      window.alert('Customer name is required');
+      toast.error("Customer name is required.");
       return;
     }
     if (!phone) {
-      window.alert('Customer phone is required');
+      toast.error("Customer phone is required.");
       return;
     }
     if (!Number.isFinite(guests) || guests <= 0) {
-      window.alert('Guest count must be greater than 0');
+      toast.error("Guest count must be greater than 0.");
       return;
     }
     if (table.capacity > 0 && guests > table.capacity) {
-      window.alert(`Guest count cannot exceed table capacity (${table.capacity})`);
+      toast.error(`Guest count cannot exceed table capacity (${table.capacity}).`);
       return;
     }
 

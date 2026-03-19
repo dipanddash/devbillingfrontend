@@ -1,512 +1,660 @@
-﻿import {
-  Package,
-  AlertTriangle,
-  TrendingDown,
-  Plus,
-  Pencil,
-  Trash2,
-  BarChart3,
-  Sparkles
-} from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from "react";
 
-const API_BASE = `${import.meta.env.VITE_API_BASE}/api/inventory`
+import CategoryManagerModal from "./components/inventory/CategoryManagerModal";
+import DailyAssignmentSection from "./components/inventory/DailyAssignmentSection";
+import DeleteModal from "./components/inventory/DeleteModal";
+import IngredientModal from "./components/inventory/IngredientModal";
+import InventoryCategoryViewSection from "./components/inventory/InventoryCategoryViewSection";
+import InventoryHeaderSection from "./components/inventory/InventoryHeaderSection";
+import InventorySummaryCardsSection from "./components/inventory/InventorySummaryCardsSection";
+import InventoryTableSection from "./components/inventory/InventoryTableSection";
+import { emptyForm, INVENTORY_UNITS } from "./components/inventory/constants";
+import type {
+  DailyStockRow,
+  DailySummaryResponse,
+  HealthFilter,
+  Ingredient,
+  IngredientCategory,
+  IngredientFormState,
+  InventorySortBy,
+} from "./components/inventory/types";
+import { asArray, asNumber, extractApiMessage, todayIso } from "./components/inventory/utils";
 
-interface Ingredient {
-  id: string
-  name: string
-  unit: string
-  current_stock: string
-  min_stock: string
-}
-
-const UNIT_GROUPS = [
-  { label: 'Weight', color: '#7c3aed', options: ['kg', 'g', 'mg', 'lb', 'oz', 'ton'] as const },
-  { label: 'Volume', color: '#2563eb', options: ['L', 'ml', 'cl', 'gal'] as const },
-  { label: 'Count', color: '#0891b2', options: ['pcs', 'unit', 'dozen', 'pair', 'set'] as const },
-  { label: 'Pack/Container', color: '#f59e0b', options: ['pack', 'box', 'bottle', 'can', 'jar', 'sachet', 'tray', 'bag', 'bundle'] as const },
-  { label: 'Length/Area', color: '#16a34a', options: ['m', 'cm', 'mm', 'ft', 'inch', 'sheet', 'roll'] as const },
-] as const
-
-const INVENTORY_UNITS = UNIT_GROUPS.flatMap((group) => group.options)
+const API_BASE = `${import.meta.env.VITE_API_BASE}/api/inventory`;
+const PAGE_SIZE = 5;
 
 const Inventory = () => {
-  const navigate = useNavigate()
-  const [items, setItems] = useState<Ingredient[]>([])
-  const [search, setSearch] = useState('')
-  const [openingSearch, setOpeningSearch] = useState('')
-  const [openingQuantities, setOpeningQuantities] = useState<Record<string, string>>({})
-  const [openingLoading, setOpeningLoading] = useState(false)
-  const [openingStatusLoading, setOpeningStatusLoading] = useState(false)
-  const [openingInitialized, setOpeningInitialized] = useState(false)
-  const [openingInitializedOn, setOpeningInitializedOn] = useState<string | null>(null)
-  const [openingMessage, setOpeningMessage] = useState<string | null>(null)
-  const [openingError, setOpeningError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<Ingredient | null>(null)
-  const [showAdd, setShowAdd] = useState(false)
-  const [showEdit, setShowEdit] = useState(false)
-  const [showDelete, setShowDelete] = useState(false)
+  const token = localStorage.getItem("access");
+  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
 
-  const token = localStorage.getItem('access')
+  const [items, setItems] = useState<Ingredient[]>([]);
+  const [categories, setCategories] = useState<IngredientCategory[]>([]);
+  const [itemsLoading, setItemsLoading] = useState(false);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [assignmentSearch, setAssignmentSearch] = useState("");
+  const [selectedCategoryId, setSelectedCategoryId] = useState("all");
+  const [healthFilter, setHealthFilter] = useState<HealthFilter>("all");
+  const [sortBy, setSortBy] = useState<InventorySortBy>("name");
+  const [selectedDate, setSelectedDate] = useState(todayIso());
+  const [itemsError, setItemsError] = useState<string | null>(null);
+  const [assignmentPage, setAssignmentPage] = useState(1);
+  const [inventoryPage, setInventoryPage] = useState(1);
 
-  const loadOpeningStatus = async () => {
-    setOpeningStatusLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/opening-stock/status/`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      if (!res.ok) throw new Error('Failed to load opening stock status')
-      const data = await res.json()
-      setOpeningInitialized(Boolean(data?.initialized))
-      setOpeningInitializedOn(data?.initialized_on ? String(data.initialized_on) : null)
-      if (data?.initialized) {
-        setOpeningMessage('Opening stock is already initialized and locked.')
-      }
-    } catch {
-      setOpeningError('Unable to check opening stock status.')
-    } finally {
-      setOpeningStatusLoading(false)
-    }
-  }
+  const [dailySummary, setDailySummary] = useState<DailySummaryResponse | null>(null);
+  const [assignmentQuantities, setAssignmentQuantities] = useState<Record<string, string>>({});
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
+  const [assignmentSaving, setAssignmentSaving] = useState(false);
+  const [assignmentMessage, setAssignmentMessage] = useState<string | null>(null);
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
+  const [assignmentFieldErrors, setAssignmentFieldErrors] = useState<Record<string, string>>({});
+
+  const [selected, setSelected] = useState<Ingredient | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [addForm, setAddForm] = useState<IngredientFormState>(emptyForm);
+  const [editForm, setEditForm] = useState<IngredientFormState>(emptyForm);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
 
   const loadItems = async () => {
-    const res = await fetch(`${API_BASE}/ingredients/`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-    const data = await res.json()
-    setItems(data)
-  }
+    setItemsLoading(true);
+    setItemsError(null);
+    try {
+      const res = await fetch(`${API_BASE}/ingredients/`, { headers: authHeaders });
+      const payload = await res.json().catch(() => []);
+      if (!res.ok) {
+        throw new Error(extractApiMessage(payload, "Unable to load ingredients."));
+      }
+      const rows = asArray<Ingredient>(payload).map((row) => ({
+        ...row,
+        category_id: row.category_id ? String(row.category_id) : null,
+        category_name: String(row.category_name ?? "OTHERS"),
+        unit_price: String(row.unit_price ?? "0"),
+        current_stock: String(row.current_stock ?? "0"),
+        min_stock: String(row.min_stock ?? "0"),
+      }));
+      setItems(rows);
+    } catch (error) {
+      setItems([]);
+      setItemsError(error instanceof Error ? error.message : "Unable to load ingredients.");
+    } finally {
+      setItemsLoading(false);
+    }
+  };
+
+  const loadCategories = async () => {
+    setCategoriesLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/categories/`, { headers: authHeaders });
+      const payload = await res.json().catch(() => []);
+      if (!res.ok) {
+        throw new Error(extractApiMessage(payload, "Unable to load categories."));
+      }
+      const rows = asArray<IngredientCategory>(payload)
+        .map((row) => ({
+          id: String(row.id),
+          name: String(row.name ?? "OTHERS"),
+          is_active: Boolean(row.is_active),
+          ingredients_count: Number(row.ingredients_count ?? 0),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      setCategories(rows);
+    } catch {
+      setCategories([]);
+    } finally {
+      setCategoriesLoading(false);
+    }
+  };
+
+  const loadDailySummary = async (dateToLoad: string) => {
+    setAssignmentLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/daily-stock/summary/?date=${encodeURIComponent(dateToLoad)}`, {
+        headers: authHeaders,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(extractApiMessage(payload, "Failed to load daily stock summary."));
+
+      const parsed = payload as DailySummaryResponse;
+      setDailySummary(parsed);
+      const nextQuantities: Record<string, string> = {};
+      (parsed.rows || []).forEach((row) => {
+        nextQuantities[String(row.ingredient_id)] = String(row.assigned_today ?? "0");
+      });
+      setAssignmentQuantities(nextQuantities);
+      setAssignmentError(null);
+      setAssignmentFieldErrors({});
+    } catch (error) {
+      setDailySummary(null);
+      setAssignmentError(error instanceof Error ? error.message : "Unable to load daily stock summary.");
+    } finally {
+      setAssignmentLoading(false);
+    }
+  };
 
   useEffect(() => {
-    loadItems()
-    loadOpeningStatus()
-  }, [])
+    void loadItems();
+    void loadCategories();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const getStatus = (current: number, min: number) => {
-    if (current <= 0) return 'out'
-    if (current <= min) return 'low'
-    return 'good'
-  }
+  useEffect(() => {
+    void loadDailySummary(selectedDate);
+  }, [selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const filtered = items.filter(i =>
-    i.name.toLowerCase().includes(search.toLowerCase())
-  )
-  const openingFiltered = items.filter(i =>
-    i.name.toLowerCase().includes(openingSearch.toLowerCase())
-  )
+  useEffect(() => {
+    if (!selected) return;
+    setEditForm({
+      name: selected.name,
+      category_id: selected.category_id ?? "",
+      unit: selected.unit || INVENTORY_UNITS[0],
+      unit_price: String(selected.unit_price ?? ""),
+      current_stock: String(selected.current_stock ?? ""),
+      min_stock: String(selected.min_stock ?? ""),
+      is_active: Boolean(selected.is_active),
+    });
+  }, [selected]);
 
-  const lowCount = items.filter(
-    i => getStatus(Number(i.current_stock), Number(i.min_stock)) === 'low'
-  ).length
+  useEffect(() => {
+    if (!categories.length) return;
+    setAddForm((prev) => {
+      if (prev.category_id) return prev;
+      return { ...prev, category_id: categories[0].id };
+    });
+  }, [categories]);
 
-  const outCount = items.filter(
-    i => getStatus(Number(i.current_stock), Number(i.min_stock)) === 'out'
-  ).length
-const calculateHealthScore = (current: number, min: number) => {
-  if (current <= 0) return 0
-  if (current <= min) return 40
-  return 100
-}
-
-const calculateReorder = (current: number, min: number) => {
-  if (current <= min) {
-    return min * 2 - current
-  }
-  return 0
-}
-
-const calculateValuation = (stock: number) => {
-  return stock * 50 // fake cost per unit (can replace later)
-}
-
-  const handleInitOpeningStock = async () => {
-    if (openingInitialized) {
-      setOpeningError('Opening stock is already initialized and cannot be changed.')
-      setOpeningMessage(null)
-      return
+  useEffect(() => {
+    if (selectedCategoryId === "all") return;
+    const exists = categories.some((category) => category.id === selectedCategoryId);
+    if (!exists) {
+      setSelectedCategoryId("all");
     }
-    const payloadItems = items
-      .filter((i) => (openingQuantities[i.id] ?? '').trim() !== '')
-      .map((i) => ({
-        ingredient: i.id,
-        quantity: openingQuantities[i.id].trim(),
-      }))
+  }, [categories, selectedCategoryId]);
 
-    if (!payloadItems.length) {
-      setOpeningError('Enter at least one opening stock quantity.')
-      setOpeningMessage(null)
-      return
+  const dailyMap = useMemo(() => {
+    const map: Record<string, DailyStockRow> = {};
+    (dailySummary?.rows || []).forEach((row) => {
+      map[String(row.ingredient_id)] = row;
+    });
+    return map;
+  }, [dailySummary]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    items.forEach((item) => {
+      const key = String(item.category_id ?? "");
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return counts;
+  }, [items]);
+
+  const filtered = useMemo(() => {
+    const searchKey = search.trim().toLowerCase();
+    const list = items.filter((item) => {
+      if (selectedCategoryId !== "all" && String(item.category_id ?? "") !== selectedCategoryId) return false;
+      if (searchKey && !item.name.toLowerCase().includes(searchKey)) return false;
+      const current = asNumber(item.current_stock);
+      const min = asNumber(item.min_stock);
+      if (healthFilter === "out") return current <= 0;
+      if (healthFilter === "low") return current > 0 && current <= min;
+      if (healthFilter === "healthy") return current > min;
+      return true;
+    });
+
+    if (sortBy === "stock") {
+      return [...list].sort((a, b) => asNumber(b.current_stock) - asNumber(a.current_stock));
     }
-
-    setOpeningLoading(true)
-    setOpeningError(null)
-    setOpeningMessage(null)
-    try {
-      const res = await fetch(`${API_BASE}/opening-stock/init/`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ items: payloadItems })
-      })
-
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        throw new Error(String(data?.error ?? 'Failed to initialize opening stock'))
-      }
-
-      setOpeningMessage(`Opening stock initialized for ${data?.count ?? payloadItems.length} ingredients.`)
-      setOpeningQuantities({})
-      setOpeningInitialized(true)
-      setOpeningInitializedOn(new Date().toISOString())
-      loadItems()
-      loadOpeningStatus()
-    } catch (err) {
-      setOpeningError(err instanceof Error ? err.message : 'Unable to initialize opening stock.')
-    } finally {
-      setOpeningLoading(false)
+    if (sortBy === "valuation") {
+      return [...list].sort(
+        (a, b) =>
+          asNumber(b.current_stock) * asNumber(b.unit_price) - asNumber(a.current_stock) * asNumber(a.unit_price),
+      );
     }
-  }
-  /* ================= ADD ================= */
+    return [...list].sort((a, b) => a.name.localeCompare(b.name));
+  }, [items, search, selectedCategoryId, healthFilter, sortBy]);
+
+  const assignmentFiltered = useMemo(() => {
+    const searchKey = assignmentSearch.trim().toLowerCase();
+    return items.filter((item) => {
+      if (selectedCategoryId !== "all" && String(item.category_id ?? "") !== selectedCategoryId) return false;
+      if (searchKey && !item.name.toLowerCase().includes(searchKey)) return false;
+      return true;
+    });
+  }, [items, assignmentSearch, selectedCategoryId]);
+
+  useEffect(() => {
+    setAssignmentPage(1);
+  }, [assignmentSearch, selectedCategoryId, items.length]);
+
+  useEffect(() => {
+    setInventoryPage(1);
+  }, [search, selectedCategoryId, healthFilter, sortBy, items.length]);
+
+  const assignmentTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(assignmentFiltered.length / PAGE_SIZE)),
+    [assignmentFiltered.length],
+  );
+  const inventoryTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(filtered.length / PAGE_SIZE)),
+    [filtered.length],
+  );
+
+  useEffect(() => {
+    if (assignmentPage > assignmentTotalPages) {
+      setAssignmentPage(assignmentTotalPages);
+    }
+  }, [assignmentPage, assignmentTotalPages]);
+
+  useEffect(() => {
+    if (inventoryPage > inventoryTotalPages) {
+      setInventoryPage(inventoryTotalPages);
+    }
+  }, [inventoryPage, inventoryTotalPages]);
+
+  const assignmentPaginated = useMemo(() => {
+    const startIdx = (assignmentPage - 1) * PAGE_SIZE;
+    return assignmentFiltered.slice(startIdx, startIdx + PAGE_SIZE);
+  }, [assignmentFiltered, assignmentPage]);
+
+  const filteredPaginated = useMemo(() => {
+    const startIdx = (inventoryPage - 1) * PAGE_SIZE;
+    return filtered.slice(startIdx, startIdx + PAGE_SIZE);
+  }, [filtered, inventoryPage]);
+
+  const assignmentVisibleTotals = useMemo(() => {
+    let assigned = 0;
+    let used = 0;
+    let remaining = 0;
+    let valuation = 0;
+    assignmentFiltered.forEach((item) => {
+      const row = dailyMap[item.id];
+      assigned += asNumber(row?.assigned_today);
+      used += asNumber(row?.used_today);
+      remaining += asNumber(row?.remaining_today);
+      valuation += asNumber(item.current_stock) * asNumber(item.unit_price);
+    });
+    return {
+      assigned: assigned.toFixed(3),
+      used: used.toFixed(3),
+      remaining: remaining.toFixed(3),
+      valuation: valuation.toFixed(2),
+    };
+  }, [assignmentFiltered, dailyMap]);
+
+  const lowCount = useMemo(
+    () => items.filter((item) => asNumber(item.current_stock) > 0 && asNumber(item.current_stock) <= asNumber(item.min_stock)).length,
+    [items],
+  );
+  const outCount = useMemo(() => items.filter((item) => asNumber(item.current_stock) <= 0).length, [items]);
+  const totalValuation = useMemo(
+    () => items.reduce((sum, item) => sum + asNumber(item.current_stock) * asNumber(item.unit_price), 0),
+    [items],
+  );
+
+  const validateForm = (form: IngredientFormState) => {
+    if (!form.name.trim()) return "Ingredient name is required.";
+    if (!form.category_id.trim()) return "Category is required.";
+    if (!form.unit.trim()) return "Unit is required.";
+    if (!Number.isFinite(Number(form.unit_price)) || Number(form.unit_price) <= 0) {
+      return "Unit price must be greater than zero.";
+    }
+    if (form.current_stock.trim() !== "" && (!Number.isFinite(Number(form.current_stock)) || Number(form.current_stock) < 0)) {
+      return "Current stock cannot be negative.";
+    }
+    if (form.min_stock.trim() !== "" && (!Number.isFinite(Number(form.min_stock)) || Number(form.min_stock) < 0)) {
+      return "Minimum stock cannot be negative.";
+    }
+    return null;
+  };
+
+  const resetAddForm = () => {
+    setAddForm({
+      ...emptyForm,
+      category_id: categories[0]?.id ?? "",
+    });
+  };
 
   const handleAdd = async () => {
-    const name = (document.getElementById('addName') as HTMLInputElement).value
-    const unit = (document.getElementById('addUnit') as HTMLSelectElement).value
-    const current = (document.getElementById('addCurrent') as HTMLInputElement).value
-    const min = (document.getElementById('addMin') as HTMLInputElement).value
+    const err = validateForm(addForm);
+    if (err) {
+      setFormError(err);
+      return;
+    }
+    setFormError(null);
 
-    await fetch(`${API_BASE}/ingredients/`, {
-      method: 'POST',
+    const payload = {
+      ...addForm,
+      current_stock: addForm.current_stock.trim() === "" ? "0" : addForm.current_stock,
+      min_stock: addForm.min_stock.trim() === "" ? "0" : addForm.min_stock,
+    };
+
+    const res = await fetch(`${API_BASE}/ingredients/`, {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
+        "Content-Type": "application/json",
+        ...authHeaders,
       },
-      body: JSON.stringify({
-        name,
-        unit,
-        current_stock: current,
-        min_stock: min
-      })
-    })
+      body: JSON.stringify(payload),
+    });
+    const responsePayload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setFormError(extractApiMessage(responsePayload, "Failed to add ingredient."));
+      return;
+    }
 
-    setShowAdd(false)
-    loadItems()
-  }
-
-  /* ================= EDIT ================= */
+    setShowAdd(false);
+    resetAddForm();
+    await loadItems();
+    await loadDailySummary(selectedDate);
+  };
 
   const handleUpdate = async () => {
-    if (!selected) return
+    if (!selected) return;
+    const err = validateForm(editForm);
+    if (err) {
+      setFormError(err);
+      return;
+    }
+    setFormError(null);
 
-    const name = (document.getElementById('editName') as HTMLInputElement).value
-    const unit = (document.getElementById('editUnit') as HTMLSelectElement).value
-    const current = (document.getElementById('editCurrent') as HTMLInputElement).value
-    const min = (document.getElementById('editMin') as HTMLInputElement).value
+    const payload = {
+      ...editForm,
+      current_stock: editForm.current_stock.trim() === "" ? "0" : editForm.current_stock,
+      min_stock: editForm.min_stock.trim() === "" ? "0" : editForm.min_stock,
+    };
 
-    await fetch(`${API_BASE}/ingredients/${selected.id}/`, {
-      method: 'PUT',
+    const res = await fetch(`${API_BASE}/ingredients/${selected.id}/`, {
+      method: "PUT",
       headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
+        "Content-Type": "application/json",
+        ...authHeaders,
       },
-      body: JSON.stringify({
-        name,
-        unit,
-        current_stock: current,
-        min_stock: min
-      })
-    })
+      body: JSON.stringify(payload),
+    });
+    const responsePayload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setFormError(extractApiMessage(responsePayload, "Failed to update ingredient."));
+      return;
+    }
 
-    setShowEdit(false)
-    loadItems()
-  }
-
-  /* ================= DELETE ================= */
+    setShowEdit(false);
+    setSelected(null);
+    await loadItems();
+    await loadDailySummary(selectedDate);
+  };
 
   const handleDelete = async () => {
-    if (!selected) return
+    if (!selected) return;
+    setDeleteError(null);
+    try {
+      const res = await fetch(`${API_BASE}/ingredients/${selected.id}/`, {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDeleteError(
+          extractApiMessage(
+            payload,
+            "Unable to delete ingredient. This ingredient may be in use by recipes or transactions.",
+          ),
+        );
+        return;
+      }
+      setShowDelete(false);
+      setSelected(null);
+      await loadItems();
+      await loadDailySummary(selectedDate);
+    } catch {
+      setDeleteError("Unable to delete ingredient right now. Please try again.");
+    }
+  };
 
-    await fetch(`${API_BASE}/ingredients/${selected.id}/`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` }
-    })
+  const handleCreateCategory = async (name: string): Promise<string | null> => {
+    const trimmed = name.trim();
+    if (!trimmed) return "Category name is required.";
+    const res = await fetch(`${API_BASE}/categories/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+      },
+      body: JSON.stringify({ name: trimmed, is_active: true }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) return extractApiMessage(payload, "Failed to create category.");
+    await loadCategories();
+    await loadItems();
+    return null;
+  };
 
-    setShowDelete(false)
-    loadItems()
-  }
+  const handleRenameCategory = async (id: string, name: string): Promise<string | null> => {
+    const trimmed = name.trim();
+    if (!trimmed) return "Category name is required.";
+    const res = await fetch(`${API_BASE}/categories/${id}/`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+      },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) return extractApiMessage(payload, "Failed to update category.");
+    await loadCategories();
+    await loadItems();
+    return null;
+  };
+
+  const handleDeleteCategory = async (id: string): Promise<string | null> => {
+    const res = await fetch(`${API_BASE}/categories/${id}/`, {
+      method: "DELETE",
+      headers: authHeaders,
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) return extractApiMessage(payload, "Failed to delete category.");
+    await loadCategories();
+    await loadItems();
+    if (selectedCategoryId === id) setSelectedCategoryId("all");
+    return null;
+  };
+
+  const handleSaveDailyAssignment = async () => {
+    const nextFieldErrors: Record<string, string> = {};
+    assignmentFiltered.forEach((ingredient) => {
+      const raw = (assignmentQuantities[ingredient.id] ?? dailyMap[ingredient.id]?.assigned_today ?? "0").trim();
+      const qty = Number(raw || "0");
+      const totalStock = asNumber(dailyMap[ingredient.id]?.total_stock ?? ingredient.current_stock);
+      const usedToday = asNumber(dailyMap[ingredient.id]?.used_today ?? "0");
+
+      if (!Number.isFinite(qty) || qty < 0) {
+        nextFieldErrors[ingredient.id] = `Enter a valid non-negative quantity for ${ingredient.name}.`;
+        return;
+      }
+      if (qty > totalStock) {
+        nextFieldErrors[ingredient.id] = `${ingredient.name}: assign ${totalStock.toFixed(3)} ${ingredient.unit} or less.`;
+        return;
+      }
+      if (qty < usedToday) {
+        nextFieldErrors[ingredient.id] =
+          `${ingredient.name}: assigned quantity cannot be below used quantity (${usedToday.toFixed(3)} ${ingredient.unit}).`;
+      }
+    });
+
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setAssignmentFieldErrors(nextFieldErrors);
+      setAssignmentError(Object.values(nextFieldErrors)[0]);
+      setAssignmentMessage(null);
+      return;
+    }
+
+    const payloadItems = assignmentFiltered.map((item) => ({
+      ingredient: item.id,
+      quantity: (assignmentQuantities[item.id] ?? dailyMap[item.id]?.assigned_today ?? "0").trim() || "0",
+    }));
+
+    setAssignmentSaving(true);
+    setAssignmentError(null);
+    setAssignmentMessage(null);
+    setAssignmentFieldErrors({});
+    try {
+      const res = await fetch(`${API_BASE}/daily-stock/assign/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders,
+        },
+        body: JSON.stringify({
+          date: selectedDate,
+          items: payloadItems,
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(extractApiMessage(payload, "Failed to save daily assignment."));
+      }
+
+      setAssignmentMessage(String((payload as { message?: string }).message ?? "Daily stock assignment saved."));
+      await loadDailySummary(selectedDate);
+    } catch (error) {
+      setAssignmentError(error instanceof Error ? error.message : "Unable to save daily assignment.");
+    } finally {
+      setAssignmentSaving(false);
+    }
+  };
+
+  const handleAssignmentQuantityChange = (ingredientId: string, value: string) => {
+    setAssignmentQuantities((prev) => ({
+      ...prev,
+      [ingredientId]: value,
+    }));
+    setAssignmentFieldErrors((prev) => {
+      if (!prev[ingredientId]) return prev;
+      const { [ingredientId]: _discard, ...rest } = prev;
+      return rest;
+    });
+  };
+
+  const openAddModal = () => {
+    resetAddForm();
+    setFormError(null);
+    setShowAdd(true);
+  };
 
   return (
-    <div className="relative -mt-4 space-y-6 overflow-hidden animate-fade-in md:-mt-6">
+    <div className="relative -mt-4 space-y-6 animate-fade-in md:-mt-6">
       <div className="pointer-events-none absolute -left-20 top-0 h-72 w-72 rounded-full bg-violet-300/25 blur-3xl" />
       <div className="pointer-events-none absolute -right-20 top-10 h-80 w-80 rounded-full bg-fuchsia-300/20 blur-3xl" />
 
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_1fr]">
-        <div className="relative overflow-hidden rounded-3xl border border-violet-200 bg-[linear-gradient(130deg,#1b1132_0%,#452678_42%,#7441c9_100%)] p-7 text-white shadow-[0_18px_42px_rgba(52,22,97,0.34)]">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_18%,rgba(255,255,255,0.26),transparent_34%),radial-gradient(circle_at_82%_26%,rgba(255,255,255,0.14),transparent_28%)]" />
-          <div className="relative z-10">
-            <p className="text-xs uppercase tracking-[0.24em] text-violet-100/90">Enterprise Supply Desk</p>
-            <h1 className="mt-2 text-4xl font-bold leading-tight">Inventory Intelligence</h1>
-            <p className="mt-1.5 max-w-xl text-sm text-violet-100/95">
-              Real-time stock posture, reorder liability, and valuation visibility in one workspace.
-            </p>
-            <div className="mt-6 flex flex-wrap gap-2 text-xs font-semibold">
-              <span className="rounded-full border border-white/25 bg-white/15 px-3 py-1.5">Realtime Monitoring</span>
-              <span className="rounded-full border border-white/25 bg-white/15 px-3 py-1.5">Forecast Ready</span>
-              <span className="rounded-full border border-white/25 bg-white/15 px-3 py-1.5">Ops Compliant</span>
-            </div>
-          </div>
-        </div>
+      <InventoryHeaderSection
+        filteredCount={filtered.length}
+        search={search}
+        selectedCategoryId={selectedCategoryId}
+        healthFilter={healthFilter}
+        sortBy={sortBy}
+        categories={categories}
+        onSearchChange={setSearch}
+        onCategoryChange={setSelectedCategoryId}
+        onHealthFilterChange={setHealthFilter}
+        onSortByChange={setSortBy}
+        onAddIngredient={openAddModal}
+        onManageCategories={() => {
+          setCategoryError(null);
+          setShowCategoryModal(true);
+        }}
+      />
 
-        <div className="rounded-3xl border border-violet-200/80 bg-white/92 p-6 shadow-[0_14px_34px_rgba(72,35,130,0.12)] backdrop-blur-sm">
-          <div className="mb-4 flex items-center justify-between">
-            <div className="inline-flex items-center gap-2 text-violet-700">
-              <Sparkles className="h-4 w-4" />
-              <span className="text-xs font-semibold uppercase tracking-[0.16em]">Actions</span>
-            </div>
-            <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700">
-              {filtered.length} visible
-            </span>
-          </div>
+      <InventoryCategoryViewSection
+        categoriesLoading={categoriesLoading}
+        categories={categories}
+        selectedCategoryId={selectedCategoryId}
+        itemsCount={items.length}
+        categoryCounts={categoryCounts}
+        onSelectCategory={setSelectedCategoryId}
+      />
 
-          <div className="space-y-3">
-            <div className="relative">
-              <input
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search ingredients..."
-                className="w-full rounded-xl border border-violet-200 bg-[linear-gradient(180deg,#ffffff_0%,#faf7ff_100%)] px-4 py-2.5 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-300/40"
-              />
-            </div>
+      <InventorySummaryCardsSection
+        itemsCount={items.length}
+        lowCount={lowCount}
+        outCount={outCount}
+        totalValuation={totalValuation}
+      />
 
-            <button
-              onClick={() => setShowAdd(true)}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[linear-gradient(135deg,#7f56d9_0%,#6f43cf_100%)] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_10px_22px_rgba(111,67,207,0.34)] transition hover:opacity-95"
-            >
-              <Plus className="w-4 h-4" />
-              Add Ingredient
-            </button>
-            <button
-              onClick={() => navigate('/admin/assets')}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-violet-300 bg-white px-5 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-50"
-            >
-              <Package className="w-4 h-4" />
-              Manage Assets
-            </button>
-          </div>
-        </div>
-      </section>
+      <DailyAssignmentSection
+        pageSize={PAGE_SIZE}
+        selectedDate={selectedDate}
+        assignmentSaving={assignmentSaving}
+        assignmentLoading={assignmentLoading}
+        assignmentFiltered={assignmentPaginated}
+        assignmentTotalCount={assignmentFiltered.length}
+        assignmentPage={assignmentPage}
+        assignmentTotalPages={assignmentTotalPages}
+        assignmentVisibleTotals={assignmentVisibleTotals}
+        assignmentSearch={assignmentSearch}
+        assignmentError={assignmentError}
+        assignmentMessage={assignmentMessage}
+        assignmentQuantities={assignmentQuantities}
+        assignmentFieldErrors={assignmentFieldErrors}
+        dailyMap={dailyMap}
+        onSelectedDateChange={setSelectedDate}
+        onSave={handleSaveDailyAssignment}
+        onAssignmentSearchChange={setAssignmentSearch}
+        onAssignmentPageChange={setAssignmentPage}
+        onAssignmentQuantityChange={handleAssignmentQuantityChange}
+      />
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Card title="Total Items" value={items.length} icon={<Package className="w-5 h-5 text-violet-600" />} />
-        <Card title="Low Stock" value={lowCount} icon={<AlertTriangle className="w-5 h-5 text-fuchsia-500" />} />
-        <Card title="Out of Stock" value={outCount} icon={<TrendingDown className="w-5 h-5 text-rose-500" />} />
-        <Card
-          title="Inventory Health"
-          value={`${items.length === 0 ? 0 : Math.round(((items.length - lowCount - outCount) / items.length) * 100)}%`}
-          icon={<BarChart3 className="w-5 h-5 text-violet-600" />}
-        />
-      </section>
+      <InventoryTableSection
+        pageSize={PAGE_SIZE}
+        itemsLoading={itemsLoading}
+        filtered={filteredPaginated}
+        totalCount={filtered.length}
+        currentPage={inventoryPage}
+        totalPages={inventoryTotalPages}
+        dailyMap={dailyMap}
+        itemsError={itemsError}
+        onPageChange={setInventoryPage}
+        onEdit={(ingredient) => {
+          setSelected(ingredient);
+          setFormError(null);
+          setShowEdit(true);
+        }}
+        onDelete={(ingredient) => {
+          setSelected(ingredient);
+          setDeleteError(null);
+          setShowDelete(true);
+        }}
+      />
 
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_20px_rgba(2,6,23,0.06)]">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Opening Stock Initialization (One Time)</h2>
-            <p className="text-xs text-slate-600">
-              Set initial stock only on first setup. Backend blocks re-initialization after first success.
-            </p>
-            {openingInitialized ? (
-              <p className="mt-1 text-xs font-semibold text-emerald-700">
-                Locked
-                {openingInitializedOn ? ` on ${new Date(openingInitializedOn).toLocaleString()}` : ''}.
-              </p>
-            ) : null}
-          </div>
-          <button
-            onClick={handleInitOpeningStock}
-            disabled={openingLoading || openingStatusLoading || openingInitialized}
-            className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-          >
-            {openingInitialized ? 'Already Initialized' : openingLoading ? 'Initializing...' : 'Initialize Opening Stock'}
-          </button>
-        </div>
-
-        <input
-          value={openingSearch}
-          onChange={(e) => setOpeningSearch(e.target.value)}
-          placeholder="Search ingredient for opening stock..."
-          disabled={openingInitialized}
-          className="mb-4 w-full rounded-xl border border-violet-200 bg-[linear-gradient(180deg,#ffffff_0%,#faf7ff_100%)] px-4 py-2.5 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-300/40"
-        />
-
-        {openingError ? <p className="mb-3 text-sm font-medium text-rose-600">{openingError}</p> : null}
-        {openingMessage ? <p className="mb-3 text-sm font-medium text-emerald-700">{openingMessage}</p> : null}
-
-        <div className="max-h-72 overflow-auto rounded-xl border border-slate-200">
-          <table className="w-full min-w-[680px] text-sm">
-            <thead className="bg-slate-50 text-slate-600 uppercase text-[11px] tracking-[0.12em]">
-              <tr>
-                <th className="px-4 py-3 text-left">Ingredient</th>
-                <th className="px-4 py-3 text-left">Unit</th>
-                <th className="px-4 py-3 text-left">Current Stock</th>
-                <th className="px-4 py-3 text-left">Opening Quantity</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {openingFiltered.map((row) => (
-                <tr key={row.id}>
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{row.name}</td>
-                  <td className="px-4 py-2.5 text-slate-700">{row.unit}</td>
-                  <td className="px-4 py-2.5 text-slate-700">{row.current_stock}</td>
-                  <td className="px-4 py-2.5">
-                    <input
-                      value={openingQuantities[row.id] ?? ''}
-                      onChange={(e) => setOpeningQuantities((prev) => ({ ...prev, [row.id]: e.target.value }))}
-                      placeholder="0"
-                      type="number"
-                      disabled={openingInitialized}
-                      className="h-9 w-36 rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-violet-400"
-                    />
-                  </td>
-                </tr>
-              ))}
-              {openingFiltered.length === 0 ? (
-                <tr>
-                  <td className="px-4 py-4 text-sm text-slate-500" colSpan={4}>No ingredients found.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_10px_20px_rgba(2,6,23,0.06)]">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px] text-sm">
-            <thead className="bg-slate-100 text-slate-600 uppercase text-[11px] tracking-[0.12em]">
-              <tr>
-                <th className="px-6 py-3.5 text-left">Ingredient</th>
-                <th className="px-6 py-3.5 text-left">Stock</th>
-                <th className="px-6 py-3.5 text-left">Min Level</th>
-                <th className="px-6 py-3.5 text-left">Reorder</th>
-                <th className="px-6 py-3.5 text-left">Valuation</th>
-                <th className="px-6 py-3.5 text-left">Health</th>
-                <th className="px-6 py-3.5 text-left">Actions</th>
-              </tr>
-            </thead>
-
-            <tbody className="divide-y divide-slate-100">
-              {filtered.map(i => {
-                const current = Number(i.current_stock)
-                const min = Number(i.min_stock)
-                const status = getStatus(current, min)
-                const health = calculateHealthScore(current, min)
-                const reorder = calculateReorder(current, min)
-                const valuation = calculateValuation(current)
-
-                return (
-                  <tr key={i.id} className="transition hover:bg-slate-50/60">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
-                        <span className="font-semibold tracking-tight text-slate-900">{i.name}</span>
-                      </div>
-                    </td>
-
-                    <td className="px-6 py-4 font-medium text-slate-700">
-                      {i.current_stock} {i.unit}
-                    </td>
-
-                    <td className="px-6 py-4 font-medium text-slate-700">
-                      {i.min_stock} {i.unit}
-                    </td>
-
-                    <td className="px-6 py-4">
-                      <span className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
-                        reorder > 0 ? "border border-amber-200 bg-amber-50 text-amber-700" : "border border-slate-200 bg-slate-50 text-slate-600"
-                      }`}>
-                        {reorder > 0 ? `Reorder ${reorder} ${i.unit}` : "No Reorder"}
-                      </span>
-                    </td>
-
-                    <td className="px-6 py-4 font-semibold text-slate-900">
-                      Rs.{valuation.toLocaleString()}
-                    </td>
-
-                    <td className="px-6 py-4">
-                      <div className="space-y-1">
-                        <span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
-                          status === 'good'
-                            ? 'text-emerald-700'
-                            : status === 'low'
-                            ? 'text-amber-700'
-                            : 'text-rose-700'
-                        }`}>
-                          <span className={`h-2 w-2 rounded-full ${
-                            status === 'good'
-                              ? 'bg-emerald-500'
-                              : status === 'low'
-                              ? 'bg-amber-500'
-                              : 'bg-rose-500'
-                          }`} />
-                          {status === 'good'
-                            ? 'Healthy'
-                            : status === 'low'
-                            ? 'Low Stock'
-                            : 'Out of Stock'}
-                        </span>
-                        <div className="h-1.5 w-28 rounded-full bg-slate-200">
-                          <div
-                            className={`h-1.5 rounded-full ${
-                              health >= 100 ? "bg-emerald-500" : health >= 40 ? "bg-amber-500" : "bg-rose-500"
-                            }`}
-                            style={{ width: `${health}%` }}
-                          />
-                        </div>
-                      </div>
-                    </td>
-
-                    <td className="px-6 py-4">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => {
-                            setSelected(i)
-                            setShowEdit(true)
-                          }}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition"
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            setSelected(i)
-                            setShowDelete(true)
-                          }}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-500 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 transition"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {/* MODALS */}
       {showAdd && (
-        <Modal title="Add Ingredient" onClose={() => setShowAdd(false)} onSave={handleAdd} />
+        <IngredientModal
+          title="Add Ingredient"
+          form={addForm}
+          setForm={setAddForm}
+          categories={categories}
+          error={formError}
+          onOpenCategoryManager={() => {
+            setShowAdd(false);
+            setShowCategoryModal(true);
+          }}
+          onClose={() => setShowAdd(false)}
+          onSave={handleAdd}
+        />
       )}
 
       {showEdit && selected && (
-        <Modal
-          title="Edit Ingredient"
-          ingredient={selected}
+        <IngredientModal
+          title={`Edit Ingredient - ${selected.name}`}
+          form={editForm}
+          setForm={setEditForm}
+          categories={categories}
+          error={formError}
+          onOpenCategoryManager={() => {
+            setShowEdit(false);
+            setShowCategoryModal(true);
+          }}
           onClose={() => setShowEdit(false)}
           onSave={handleUpdate}
         />
@@ -515,144 +663,40 @@ const calculateValuation = (stock: number) => {
       {showDelete && selected && (
         <DeleteModal
           name={selected.name}
+          error={deleteError}
           onClose={() => setShowDelete(false)}
           onDelete={handleDelete}
         />
       )}
 
+      {showCategoryModal && (
+        <CategoryManagerModal
+          categories={categories}
+          error={categoryError}
+          loading={categoriesLoading}
+          onClose={() => {
+            setShowCategoryModal(false);
+            setCategoryError(null);
+          }}
+          onCreate={async (name) => {
+            const error = await handleCreateCategory(name);
+            setCategoryError(error);
+            return error;
+          }}
+          onRename={async (id, name) => {
+            const error = await handleRenameCategory(id, name);
+            setCategoryError(error);
+            return error;
+          }}
+          onDelete={async (id) => {
+            const error = await handleDeleteCategory(id);
+            setCategoryError(error);
+            return error;
+          }}
+        />
+      )}
     </div>
-  )
-}
+  );
+};
 
-export default Inventory
-
-const Card = ({ title, value, icon }: { title: string; value: string | number; icon: JSX.Element }) => (
-  <div className="rounded-2xl border border-violet-200/80 bg-[linear-gradient(180deg,#ffffff_0%,#faf7ff_100%)] p-5 shadow-[0_10px_22px_rgba(75,35,132,0.08)] flex justify-between items-center">
-    <div>
-      <p className="text-[11px] uppercase tracking-[0.14em] text-violet-500">{title}</p>
-      <h3 className="text-2xl font-semibold mt-1 text-violet-950">{value}</h3>
-    </div>
-    {icon}
-  </div>
-)
-
-/* ================= MODALS ================= */
-
-const Modal = ({
-  title,
-  ingredient,
-  onClose,
-  onSave,
-}: {
-  title: string;
-  ingredient?: Ingredient;
-  onClose: () => void;
-  onSave: () => void;
-}) => (
-  (() => {
-    const unitId = ingredient ? 'editUnit' : 'addUnit'
-    const selectedUnit = ingredient?.unit || INVENTORY_UNITS[0]
-    return (
-  <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
-    <div className="bg-white w-[500px] rounded-2xl p-5 space-y-4 shadow-2xl border border-violet-200">
-
-      <h2 className="text-lg font-semibold text-violet-950">{title}</h2>
-
-      <input
-        id={ingredient ? 'editName' : 'addName'}
-        defaultValue={ingredient?.name}
-        placeholder="Name"
-        className="w-full px-4 py-2 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
-      />
-
-      <select
-        id={unitId}
-        defaultValue={selectedUnit}
-        className="w-full px-4 py-2 border border-violet-200 rounded-xl outline-none focus:border-violet-400 bg-white"
-      >
-        {!INVENTORY_UNITS.includes(selectedUnit as typeof INVENTORY_UNITS[number]) ? (
-          <option value={selectedUnit}>{selectedUnit}</option>
-        ) : null}
-        {UNIT_GROUPS.map((group) => (
-          <optgroup key={group.label} label={group.label} style={{ color: group.color, fontWeight: 700 }}>
-            {group.options.map((unit) => (
-              <option key={unit} value={unit}>
-                {unit}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-      </select>
-
-      <input
-        id={ingredient ? 'editCurrent' : 'addCurrent'}
-        defaultValue={ingredient?.current_stock}
-        type="number"
-        placeholder="Current Stock"
-        className="w-full px-4 py-2 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
-      />
-
-      <input
-        id={ingredient ? 'editMin' : 'addMin'}
-        defaultValue={ingredient?.min_stock}
-        type="number"
-        placeholder="Minimum Stock"
-        className="w-full px-4 py-2 border border-violet-200 rounded-xl outline-none focus:border-violet-400"
-      />
-
-      <div className="flex justify-end gap-4">
-        <button onClick={onClose} className="text-violet-500 hover:text-violet-700">
-          Cancel
-        </button>
-
-        <button
-          onClick={onSave}
-          className="bg-violet-600 text-white px-5 py-2 rounded-xl hover:bg-violet-700 transition"
-        >
-          Save
-        </button>
-      </div>
-
-    </div>
-  </div>
-    )
-  })()
-)
-
-const DeleteModal = ({
-  name,
-  onClose,
-  onDelete,
-}: {
-  name: string;
-  onClose: () => void;
-  onDelete: () => void;
-}) => (
-  <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
-    <div className="bg-white w-[420px] rounded-2xl p-6 space-y-5 shadow-2xl border border-violet-200">
-
-      <h2 className="text-lg font-semibold text-rose-600">Delete Ingredient</h2>
-
-      <p className="text-sm text-violet-600/75">
-        Are you sure you want to delete <strong>{name}</strong>?
-      </p>
-
-      <div className="flex justify-end gap-4">
-        <button onClick={onClose} className="text-violet-500 hover:text-violet-700">
-          Cancel
-        </button>
-
-        <button
-          onClick={onDelete}
-          className="bg-rose-600 text-white px-5 py-2 rounded-xl hover:bg-rose-700 transition"
-        >
-          Delete
-        </button>
-      </div>
-
-    </div>
-  </div>
-)
-
-
-
+export default Inventory;

@@ -447,7 +447,8 @@ export default function StaffReports() {
     if (supplier) qs.set("supplier", supplier);
     if (category) qs.set("category", category);
 
-    const url = `${API_BASE}/api/reports/${selectedMeta.endpoint}${qs.toString() ? `?${qs.toString()}` : ""}`;
+    const endpoint = selectedMeta.endpoint.replace(/^\/+/, "");
+    const url = `${API_BASE}/api/reports/${endpoint}${qs.toString() ? `?${qs.toString()}` : ""}`;
     setLoading(true);
     setError(null);
     try {

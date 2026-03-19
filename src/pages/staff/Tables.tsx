@@ -2,6 +2,7 @@
 import { motion } from 'framer-motion';
 import { Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { toast } from "sonner";
 
 import { Button } from '@/components/ui/button';
 import TableMapView from '@/components/TableMapView';
@@ -425,7 +426,7 @@ const Index = () => {
       setAddModalOpen(false);
     } catch (err) {
       console.error('Add table failed:', err);
-      alert('Failed to create table');
+      toast.error("Failed to create table.");
     } finally {
       setIsSaving(false);
     }
@@ -513,7 +514,7 @@ const Index = () => {
       navigate(`/staff/pos?${params.toString()}`);
     } catch (err: any) {
       console.error('Create session failed:', err);
-      alert(err?.message || 'Booking failed');
+      toast.error(err?.message || "Booking failed.");
     } finally {
       setIsBooking(false);
     }

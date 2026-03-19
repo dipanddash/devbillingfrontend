@@ -1,3 +1,6 @@
+import { buildOfflineFallbackResponse } from "@/lib/offlineApiFallback";
+import { forceOfflineMode, isOnline } from "@/offline/network";
+
 type AuthFetchOptions = {
   apiBase: string;
   onLogout: () => void;
@@ -13,11 +16,27 @@ const AUTH_NO_RETRY_PATHS = [
   "/api/accounts/logout/",
 ];
 
+const PUBLIC_PATHS = [
+  "/api/health/",
+  "/api/sync/health/",
+  "/api/sync/status/",
+];
+
+let refreshInFlight: Promise<string | null> | null = null;
+let authBlockedUntil = 0;
+let networkBlockedUntil = 0;
+let logoutNotifiedAt = 0;
+const ACCESS_TOKEN_REFRESH_SKEW_MS = 20_000;
+
 const shouldSkipAuth = (url: string) =>
-  AUTH_SKIP_PATHS.some((path) => url.includes(path));
+  AUTH_SKIP_PATHS.some((path) => url.includes(path)) ||
+  PUBLIC_PATHS.some((path) => url.includes(path));
 
 const shouldSkipRetry = (url: string) =>
   shouldSkipAuth(url) || AUTH_NO_RETRY_PATHS.some((path) => url.includes(path));
+
+const isApiRequest = (url: string, apiBase: string) =>
+  url.includes("/api/") || (Boolean(apiBase) && url.startsWith(apiBase));
 
 const withAuthHeader = (
   input: RequestInfo | URL,
@@ -27,24 +46,53 @@ const withAuthHeader = (
   if (!token) return [input, init];
 
   if (input instanceof Request) {
-    if (input.headers.has("Authorization")) return [input, init];
     const headers = new Headers(input.headers);
+    // Always override stale auth headers so refresh retries actually use
+    // the latest access token.
     headers.set("Authorization", `Bearer ${token}`);
     return [new Request(input, { headers }), init];
   }
 
   const headers = new Headers(init?.headers);
-  if (!headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
+  headers.set("Authorization", `Bearer ${token}`);
   return [input, { ...init, headers }];
 };
 
-const refreshAccessToken = async (apiBase: string) => {
+const clearStoredAuth = () => {
+  try {
+    localStorage.removeItem("access");
+    localStorage.removeItem("refresh");
+    localStorage.removeItem("user");
+  } catch {
+    // ignore storage failures
+  }
+};
+
+const decodeTokenExpiryMs = (token: string | null): number | null => {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(atob(parts[1]));
+    const exp = Number(payload?.exp);
+    if (!Number.isFinite(exp) || exp <= 0) return null;
+    return exp * 1000;
+  } catch {
+    return null;
+  }
+};
+
+const isTokenExpiredOrExpiring = (token: string | null) => {
+  const expMs = decodeTokenExpiryMs(token);
+  if (!expMs) return false;
+  return expMs <= Date.now() + ACCESS_TOKEN_REFRESH_SKEW_MS;
+};
+
+const refreshAccessToken = async (apiBase: string, rawFetch: typeof fetch) => {
   const refresh = localStorage.getItem("refresh");
   if (!refresh) return null;
 
-  const res = await fetch(`${apiBase}/api/accounts/token/refresh/`, {
+  const res = await rawFetch(`${apiBase}/api/accounts/token/refresh/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh }),
@@ -53,8 +101,41 @@ const refreshAccessToken = async (apiBase: string) => {
   if (!res.ok) return null;
   const data = await res.json().catch(() => null);
   const nextAccess = data?.access ? String(data.access) : null;
+  const nextRefresh = data?.refresh ? String(data.refresh) : null;
   if (nextAccess) localStorage.setItem("access", nextAccess);
+  if (nextRefresh) localStorage.setItem("refresh", nextRefresh);
   return nextAccess;
+};
+
+const notifyLogout = (onLogout: () => void) => {
+  const now = Date.now();
+  if (now - logoutNotifiedAt < 5_000) return;
+  logoutNotifiedAt = now;
+  onLogout();
+};
+
+const handleAuthFailure = (onLogout: () => void) => {
+  authBlockedUntil = Date.now() + 30_000;
+  clearStoredAuth();
+  notifyLogout(onLogout);
+};
+
+const offlineAwareFallback = async (url: string, init?: RequestInit): Promise<Response> => {
+  const fallback = await buildOfflineFallbackResponse(url, init);
+  if (fallback) return fallback;
+  return new Response(
+    JSON.stringify({
+      detail: "Offline mode. Data may be limited until connectivity returns.",
+      code: "OFFLINE_MODE",
+    }),
+    {
+      status: 503,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Offline-Mode": "true",
+      },
+    },
+  );
 };
 
 export const createAuthFetch = (
@@ -66,20 +147,81 @@ export const createAuthFetch = (
       typeof input === "string"
         ? input
         : input instanceof Request
-          ? input.url
+        ? input.url
           : String(input);
+    const method = String(init?.method ?? "GET").toUpperCase();
+    const apiCall = isApiRequest(url, apiBase);
 
-    const token = localStorage.getItem("access");
+    const isHealthProbe = PUBLIC_PATHS.some((path) => url.includes(path));
+    if (apiCall && !isHealthProbe && (!navigator.onLine || !isOnline() || Date.now() < networkBlockedUntil)) {
+      return offlineAwareFallback(url, init);
+    }
+
+    if (Date.now() < authBlockedUntil && apiCall && !shouldSkipAuth(url)) {
+      return new Response(
+        JSON.stringify({ detail: "Authentication expired. Please login again.", code: "AUTH_EXPIRED" }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    let token = localStorage.getItem("access");
+    if (apiCall && !shouldSkipAuth(url) && !token) {
+      if (method === "GET" && (!navigator.onLine || !isOnline())) {
+        return offlineAwareFallback(url, init);
+      }
+      handleAuthFailure(onLogout);
+      return new Response(
+        JSON.stringify({ detail: "Authentication required", code: "AUTH_MISSING" }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (apiCall && !shouldSkipAuth(url) && isTokenExpiredOrExpiring(token)) {
+      if (!refreshInFlight) {
+        refreshInFlight = refreshAccessToken(apiBase, originalFetch).finally(() => {
+          refreshInFlight = null;
+        });
+      }
+      const refreshedToken = await refreshInFlight;
+      if (!refreshedToken) {
+        handleAuthFailure(onLogout);
+        return new Response(
+          JSON.stringify({ detail: "Session expired. Please login again.", code: "AUTH_EXPIRED" }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      token = refreshedToken;
+    }
+
     const [firstInput, firstInit] = shouldSkipAuth(url)
       ? [input, init]
       : withAuthHeader(input, init, token);
 
-    const firstResponse = await originalFetch(firstInput, firstInit);
+    let firstResponse: Response;
+    try {
+      firstResponse = await originalFetch(firstInput, firstInit);
+    } catch {
+      networkBlockedUntil = Date.now() + 15_000;
+      forceOfflineMode();
+      return offlineAwareFallback(url, init);
+    }
+
     if (firstResponse.status !== 401 || shouldSkipRetry(url)) return firstResponse;
 
-    const refreshed = await refreshAccessToken(apiBase);
+    if (!localStorage.getItem("refresh")) {
+      handleAuthFailure(onLogout);
+      return firstResponse;
+    }
+
+    if (!refreshInFlight) {
+      refreshInFlight = refreshAccessToken(apiBase, originalFetch).finally(() => {
+        refreshInFlight = null;
+      });
+    }
+
+    const refreshed = await refreshInFlight;
     if (!refreshed) {
-      onLogout();
+      handleAuthFailure(onLogout);
       return firstResponse;
     }
 
@@ -88,9 +230,17 @@ export const createAuthFetch = (
       init,
       refreshed,
     );
-    const retryResponse = await originalFetch(retryInput, retryInit);
+    let retryResponse: Response;
+    try {
+      retryResponse = await originalFetch(retryInput, retryInit);
+    } catch {
+      networkBlockedUntil = Date.now() + 15_000;
+      forceOfflineMode();
+      return offlineAwareFallback(url, init);
+    }
+
     if (retryResponse.status === 401) {
-      onLogout();
+      handleAuthFailure(onLogout);
     }
     return retryResponse;
   };

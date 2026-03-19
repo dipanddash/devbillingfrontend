@@ -1,5 +1,7 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Boxes, Plus, Pencil, Trash2, ClipboardList, ShieldAlert } from "lucide-react";
+import { toast } from "sonner";
+import ConfirmActionDialog from "@/components/ConfirmActionDialog";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 
@@ -69,6 +71,7 @@ const Assets = () => {
   const [categoryInput, setCategoryInput] = useState("");
   const [showAssetModal, setShowAssetModal] = useState(false);
   const [editingAsset, setEditingAsset] = useState<AssetItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AssetItem | null>(null);
   const [form, setForm] = useState({
     name: "",
     category: "",
@@ -230,20 +233,23 @@ const Assets = () => {
     }
   };
 
-  const removeAsset = async (asset: AssetItem) => {
-    const ok = window.confirm(`Delete asset "${asset.name}"?`);
-    if (!ok) return;
+  const removeAsset = async () => {
+    if (!deleteTarget) return;
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/assets/${asset.id}/`, {
+      const res = await fetch(`${API_BASE}/api/assets/${deleteTarget.id}/`, {
         method: "DELETE",
         headers: getAuthHeaders(),
       });
       if (!res.ok) throw new Error("Failed to delete asset");
       await Promise.all([loadAssets(), loadLogs()]);
+      setDeleteTarget(null);
+      toast.success("Asset deleted successfully.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete asset.");
+      const message = err instanceof Error ? err.message : "Failed to delete asset.";
+      setError(message);
+      toast.error(message);
     } finally {
       setSaving(false);
     }
@@ -403,7 +409,7 @@ const Assets = () => {
                           </button>
                           <button
                             type="button"
-                            onClick={() => void removeAsset(asset)}
+                            onClick={() => setDeleteTarget(asset)}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
                           >
                             <Trash2 className="h-4 w-4" />
@@ -572,6 +578,18 @@ const Assets = () => {
           </div>
         </div>
       ) : null}
+
+      <ConfirmActionDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !saving) setDeleteTarget(null);
+        }}
+        title="Delete Asset?"
+        description={`This will permanently delete ${deleteTarget?.name ?? "this asset"}.`}
+        confirmLabel="Delete Asset"
+        isLoading={saving}
+        onConfirm={removeAsset}
+      />
     </div>
   );
 };
